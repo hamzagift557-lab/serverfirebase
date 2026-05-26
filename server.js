@@ -18,12 +18,12 @@ try {
         const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
         admin.initializeApp({
             credential: admin.credential.cert(serviceAccount),
-            databaseURL: "https://hamza-kr-default-rtdb.firebaseio.com"
+            databaseURL: "https://hamza-f798c-default-rtdb.firebaseio.com"
         });
         db = admin.database();
         console.log("✅ تم الاتصال بقاعدة بيانات فايربيس بنجاح!");
 
-        // إنشاء مفاتيح البائعين تلقائياً
+        // فحص وإنشاء مجلد البائعين والمفاتيح تلقائياً إذا لم يكن موجوداً (مرة واحدة فقط)
         const initialKeys = {
             "hamza store": "hamzax1",
             "forlan shop": "forlanx1",
@@ -32,6 +32,7 @@ try {
         db.ref('keys').once('value', snapshot => {
             if (!snapshot.exists()) {
                 db.ref('keys').set(initialKeys);
+                console.log("✅ تم إنشاء مجلد البائعين والمفاتيح الأولية بنجاح!");
             }
         });
     } else {
@@ -163,9 +164,7 @@ app.get('/api/my-accounts/:sellerName', async (req, res) => {
     }
 });
 
-// تشغيل السيرفر بشكل متوافق تماماً مع شبكة Fly.io
-// المنصة عادة ما تتواصل مع السيرفر عبر منفذ 8080 أو المنفذ الموجود في fly.toml
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Server is running on port ${PORT}`);
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`🚀 Server is running on port ${PORT}`);
 });
