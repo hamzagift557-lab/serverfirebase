@@ -12,7 +12,6 @@ app.use(express.json());
 let db = null;
 let s3Client = null;
 
-// 1. إعداد فايربيس (بشكل محمي من الانهيار)
 try {
     if (process.env.FIREBASE_SERVICE_ACCOUNT) {
         const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -21,150 +20,93 @@ try {
             databaseURL: "https://hamza-f798c-default-rtdb.firebaseio.com"
         });
         db = admin.database();
-        console.log("✅ تم الاتصال بقاعدة بيانات فايربيس بنجاح!");
-
-        // فحص وإنشاء مجلد البائعين والمفاتيح تلقائياً إذا لم يكن موجوداً (مرة واحدة فقط)
-        const initialKeys = {
-            "hamza store": "hamzax1",
-            "forlan shop": "forlanx1",
-            "lwajdi": "wajdix1"
-        };
+        
+        const initialKeys = { "hamza store": "hamzax1", "forlan shop": "forlanx1", "lwajdi": "wajdix1" };
         db.ref('keys').once('value', snapshot => {
-            if (!snapshot.exists()) {
-                db.ref('keys').set(initialKeys);
-                console.log("✅ تم إنشاء مجلد البائعين والمفاتيح الأولية بنجاح!");
-            }
+            if (!snapshot.exists()) db.ref('keys').set(initialKeys);
         });
-    } else {
-        console.log("⚠️ مفتاح فايربيس مفقود من الـ Secrets");
     }
-} catch (error) {
-    console.error("❌ فشل قراءة مفتاح فايربيس (تأكد من صحة JSON الذي الصقته):", error.message);
-}
+} catch (error) { console.error("Firebase Error:", error.message); }
 
-// 2. إعداد Cloudflare R2 (بشكل محمي)
 try {
     if (process.env.R2_ACCESS_KEY_ID) {
         s3Client = new S3Client({
             region: "auto",
             endpoint: `https://${process.env.CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-            credentials: {
-                accessKeyId: process.env.R2_ACCESS_KEY_ID,
-                secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
-            },
+            credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY },
         });
-        console.log("✅ تم الاتصال بـ Cloudflare R2 بنجاح!");
     }
-} catch (error) {
-    console.error("❌ فشل إعداد Cloudflare R2:", error.message);
-}
+} catch (error) { console.error("R2 Error:", error.message); }
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-// =========================================================
-// واجهات برمجة التطبيقات (APIs)
-// =========================================================
-
-// فحص حالة السيرفر
-app.get('/', (req, res) => {
-    res.send("🚀 السيرفر يعمل بنجاح على منصة Fly.io!");
-});
-
-// أ. تسجيل الدخول للبائعين
+// تسجيل الدخول
 app.post('/api/login', async (req, res) => {
-    if (!db) return res.status(500).json({ success: false, message: "السيرفر غير متصل بفايربيس حالياً" });
-    
+    if (!db) return res.status(500).json({ success: false, message: "السيرفر غير متصل بفايربيس" });
     const { sellerKey } = req.body;
-    if (!sellerKey) return res.status(400).json({ success: false, message: "المرجو إدخال المفتاح" });
-
     try {
         const snapshot = await db.ref('keys').once('value');
         const keys = snapshot.val();
-        
-        let sellerName = null;
-        for (let name in keys) {
-            if (keys[name] === sellerKey) {
-                sellerName = name;
-                break;
-            }
-        }
-
-        if (sellerName) {
-            res.json({ success: true, sellerName: sellerName, message: "تم تسجيل الدخول بنجاح" });
-        } else {
-            res.status(401).json({ success: false, message: "المفتاح غير صحيح" });
-        }
-    } catch (error) {
-        res.status(500).json({ success: false, message: "خطأ في السيرفر" });
-    }
+        let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
+        if (sellerName) res.json({ success: true, sellerName });
+        else res.status(401).json({ success: false, message: "المفتاح غير صحيح" });
+    } catch (error) { res.status(500).json({ success: false, message: "خطأ في السيرفر" }); }
 });
 
-// ب. إضافة حساب جديد
-app.post('/api/add-account', upload.single('image'), async (req, res) => {
-    if (!db || !s3Client) return res.status(500).json({ success: false, message: "السيرفر غير مكتمل الإعدادات" });
-
+// 1. رفع الصورة فوراً
+app.post('/api/upload-image', upload.single('image'), async (req, res) => {
+    if (!s3Client) return res.status(500).json({ success: false });
     try {
-        const { sellerName, title, email, password, bankPrice, webPrice, isGg, isIos } = req.body;
         const file = req.file;
+        const fileName = `acc_${Date.now()}_${Math.floor(Math.random()*1000)}.${file.originalname.split('.').pop()}`;
+        await s3Client.send(new PutObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: fileName, Body: file.buffer, ContentType: file.mimetype }));
+        res.json({ success: true, imageUrl: `${process.env.R2_PUBLIC_URL}/${fileName}` });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
 
-        if (!sellerName || !title || !file) {
-            return res.status(400).json({ success: false, message: "بيانات ناقصة" });
-        }
-
-        const fileExtension = file.originalname.split('.').pop();
-        const fileName = `acc_${Date.now()}_${Math.floor(Math.random() * 1000)}.${fileExtension}`;
-        
-        const command = new PutObjectCommand({
-            Bucket: process.env.R2_BUCKET_NAME,
-            Key: fileName,
-            Body: file.buffer,
-            ContentType: file.mimetype,
-        });
-
-        await s3Client.send(command);
-        const imageUrl = `${process.env.R2_PUBLIC_URL}/${fileName}`;
-
-        const today = new Date();
-        const timestamp = String(today.getDate()).padStart(2, '0') + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + today.getFullYear();
+// 2. إضافة أو تعديل الحساب
+app.post('/api/save-account', async (req, res) => {
+    try {
+        const { id, sellerName, title, email, password, bankPrice, webPrice, isGg, isGameCenter, imgUrl } = req.body;
+        if (!sellerName || !title || !imgUrl) return res.status(400).json({ success: false });
 
         const accountData = {
-            seller: sellerName,
-            title: title,
-            email: email || "",
-            password: password || "",
-            bank_price: bankPrice,
-            price_web: webPrice,
-            gg: isGg || "false",
-            ios: isIos || "false",
-            img: imageUrl,
-            timestamp: timestamp,
-            status: "available"
+            seller: sellerName, title, email: email || "", password: password || "",
+            bank_price: bankPrice || 0, price_web: webPrice,
+            gg: isGg || false, game_center: isGameCenter || false, img: imgUrl
         };
 
-        const newAccRef = db.ref('acc').push();
-        await newAccRef.set(accountData);
-
-        res.json({ success: true, message: "تمت إضافة الحساب بنجاح!", accId: newAccRef.key });
-
-    } catch (error) {
-        res.status(500).json({ success: false, message: "فشل في رفع الحساب" });
-    }
+        if (id) {
+            await db.ref(`acc/${id}`).update(accountData);
+        } else {
+            const today = new Date();
+            accountData.timestamp = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()}`;
+            accountData.status = "available";
+            await db.ref('acc').push().set(accountData);
+        }
+        res.json({ success: true });
+    } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// ج. جلب حسابات بائع معين
-app.get('/api/my-accounts/:sellerName', async (req, res) => {
-    if (!db) return res.status(500).json({ success: false, message: "السيرفر غير متصل بفايربيس" });
-
-    const { sellerName } = req.params;
+// 3. تغيير الحالة (مؤقت، مباع، حذف)
+app.post('/api/update-status', async (req, res) => {
     try {
-        const snapshot = await db.ref('acc').orderByChild('seller').equalTo(sellerName).once('value');
-        res.json({ success: true, data: snapshot.val() || {} });
-    } catch (error) {
-        res.status(500).json({ success: false, message: "خطأ في جلب الحسابات" });
-    }
+        const { id, status, sellerName } = req.body;
+        const accRef = db.ref(`acc/${id}`);
+        const snapshot = await accRef.once('value');
+        if (snapshot.exists() && snapshot.val().seller === sellerName) {
+            await accRef.update({ status: status });
+            res.json({ success: true });
+        } else { res.status(403).json({ success: false }); }
+    } catch (error) { res.status(500).json({ success: false }); }
 });
 
-const PORT = process.env.PORT || 8080;
-    app.listen(PORT, '0.0.0.0', () => {
-        console.log(`🚀 Server is running on port ${PORT}`);
+// جلب حسابات بائع
+app.get('/api/my-accounts/:sellerName', async (req, res) => {
+    try {
+        const snapshot = await db.ref('acc').orderByChild('seller').equalTo(req.params.sellerName).once('value');
+        res.json({ success: true, data: snapshot.val() || {} });
+    } catch (error) { res.status(500).json({ success: false }); }
 });
+
+app.listen(process.env.PORT || 8080, '0.0.0.0', () => console.log(`🚀 Server running!`));
