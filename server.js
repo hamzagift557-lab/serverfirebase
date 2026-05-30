@@ -12,7 +12,6 @@ app.use(express.json());
 let db = null;
 let s3Client = null;
 
-// 1. إعداد فايربيس
 try {
     if (process.env.FIREBASE_SERVICE_ACCOUNT) {
         const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -29,7 +28,6 @@ try {
     }
 } catch (error) { console.error("Firebase Error:", error.message); }
 
-// 2. إعداد Cloudflare R2
 try {
     if (process.env.R2_ACCESS_KEY_ID) {
         s3Client = new S3Client({
@@ -43,10 +41,9 @@ try {
 const upload = multer({ storage: multer.memoryStorage() });
 
 // =========================================================
-// مسارات (APIs)
+// مسارات لوحة التحكم (الويب)
 // =========================================================
 
-// تسجيل الدخول
 app.post('/api/login', async (req, res) => {
     if (!db) return res.status(500).json({ success: false, message: "السيرفر غير متصل بفايربيس" });
     const { sellerKey } = req.body;
@@ -59,7 +56,6 @@ app.post('/api/login', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: "خطأ في السيرفر" }); }
 });
 
-// رفع الصورة
 app.post('/api/upload-image', upload.single('image'), async (req, res) => {
     if (!s3Client) return res.status(500).json({ success: false });
     try {
@@ -70,81 +66,106 @@ app.post('/api/upload-image', upload.single('image'), async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// حفظ الحساب (مع الفصل الأمني القوي)
 app.post('/api/save-account', async (req, res) => {
     try {
-        const { id, sellerName, title, email, password, bankPrice, webPrice, isGg, isGameCenter, imgUrl } = req.body;
+        const { id, sellerName, title, desc, email, password, bankPrice, webPrice, isGg, isGameCenter, imgUrl } = req.body;
         if (!sellerName || !title || !imgUrl) return res.status(400).json({ success: false });
 
-        // 1. البيانات العامة للمتجر الرئيسي (بدووون باسورد أو إيميل لحمايتها)
-        const publicData = {
-            seller: sellerName, 
-            title: title, 
-            bank_price: bankPrice || 0, 
-            price_web: webPrice,
-            gg: isGg || false, 
-            game_center: isGameCenter || false, 
-            img: imgUrl
-        };
-
-        // 2. البيانات الخاصة للبائع (توضع في مجلده السري وتتضمن كل شيء)
-        const privateData = {
-            ...publicData,
-            email: email || "", 
-            password: password || ""
-        };
+        const publicData = { seller: sellerName, title, desc: desc || "", bank_price: bankPrice || 0, price_web: webPrice, gg: isGg || false, game_center: isGameCenter || false, img: imgUrl };
+        const privateData = { ...publicData, email: email || "", password: password || "" };
 
         if (id) {
-            // تحديث حساب موجود (نحدث في المجلدين معاً)
             await db.ref(`acc/${id}`).update(publicData);
             await db.ref(`sellers_data/${sellerName}/${id}`).update(privateData);
         } else {
-            // إنشاء حساب جديد كلياً
             const today = new Date();
             const timestamp = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()}`;
-            
-            publicData.timestamp = timestamp;
-            publicData.status = "available";
-            
-            privateData.timestamp = timestamp;
-            privateData.status = "available";
+            publicData.timestamp = timestamp; publicData.status = "available";
+            privateData.timestamp = timestamp; privateData.status = "available";
 
-            // إنشاء ID موحد
-            const newRef = db.ref('acc').push();
-            const newId = newRef.key;
-
-            // حقن البيانات في المجلدين في نفس اللحظة
+            const newId = db.ref('acc').push().key;
             const updates = {};
             updates[`acc/${newId}`] = publicData;
             updates[`sellers_data/${sellerName}/${newId}`] = privateData;
-            
             await db.ref().update(updates);
         }
         res.json({ success: true });
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// تحديث الحالة (تتحدث في المجلدين معاً بضربة واحدة)
 app.post('/api/update-status', async (req, res) => {
     try {
         const { id, status, sellerName } = req.body;
-        
         const updates = {};
         updates[`acc/${id}/status`] = status;
         updates[`sellers_data/${sellerName}/${id}/status`] = status;
-        
         await db.ref().update(updates);
-        
         res.json({ success: true });
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// جلب حسابات البائع (الآن نجلبها من مجلده الخاص والسري مباشرة!)
+// نظام نقل الحساب للمباع (أرشيف المبيعات)
+app.post('/api/mark-sold', async (req, res) => {
+    try {
+        const { id, sellerName, sellPrice } = req.body;
+        const accRef = db.ref(`sellers_data/${sellerName}/${id}`);
+        const snapshot = await accRef.once('value');
+
+        if (snapshot.exists()) {
+            const accData = snapshot.val();
+            const finalPrice = sellPrice && sellPrice.trim() !== "" ? parseFloat(sellPrice) : parseFloat(accData.price_web);
+            
+            const today = new Date();
+            const sellDate = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()} ${today.getHours()}:${today.getMinutes()}`;
+
+            const soldData = {
+                ...accData,
+                status: 'sold',
+                sell_date: sellDate,
+                final_sell_price: finalPrice
+            };
+
+            const updates = {};
+            updates[`acc/${id}/status`] = 'sold';
+            updates[`sellers_data/${sellerName}/${id}/status`] = 'sold';
+            updates[`sellers_data_sold/${sellerName}/${id}`] = soldData;
+
+            await db.ref().update(updates);
+            res.json({ success: true });
+        } else {
+            res.status(404).json({ success: false });
+        }
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
 app.get('/api/my-accounts/:sellerName', async (req, res) => {
     try {
-        const { sellerName } = req.params;
-        const snapshot = await db.ref(`sellers_data/${sellerName}`).once('value');
+        const snapshot = await db.ref(`sellers_data/${req.params.sellerName}`).once('value');
         res.json({ success: true, data: snapshot.val() || {} });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+// =========================================================
+// مسار التطبيق (Sketchware App) السري والآمن
+// =========================================================
+app.post('/api/app/get-sold-accounts', async (req, res) => {
+    const { sellerKey } = req.body;
+    if (!sellerKey) return res.status(400).json({ success: false, message: "مفتاح مفقود" });
+
+    try {
+        // 1. فحص المفتاح هل هو حقيقي أم اختراق
+        const keysSnap = await db.ref('keys').once('value');
+        const keys = keysSnap.val();
+        let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
+
+        if (sellerName) {
+            // 2. المفتاح صحيح -> جلب مبيعاته السرية
+            const soldSnap = await db.ref(`sellers_data_sold/${sellerName}`).once('value');
+            res.json({ success: true, data: soldSnap.val() || {} });
+        } else {
+            // 3. المفتاح خاطئ -> طرد
+            res.status(401).json({ success: false, message: "مفتاح غير مصرح به" });
+        }
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
