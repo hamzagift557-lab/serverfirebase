@@ -12,6 +12,7 @@ app.use(express.json());
 let db = null;
 let s3Client = null;
 
+// 1. إعداد فايربيس
 try {
     if (process.env.FIREBASE_SERVICE_ACCOUNT) {
         const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -28,6 +29,7 @@ try {
     }
 } catch (error) { console.error("Firebase Error:", error.message); }
 
+// 2. إعداد Cloudflare R2
 try {
     if (process.env.R2_ACCESS_KEY_ID) {
         s3Client = new S3Client({
@@ -39,6 +41,10 @@ try {
 } catch (error) { console.error("R2 Error:", error.message); }
 
 const upload = multer({ storage: multer.memoryStorage() });
+
+// =========================================================
+// مسارات (APIs)
+// =========================================================
 
 // تسجيل الدخول
 app.post('/api/login', async (req, res) => {
@@ -53,7 +59,7 @@ app.post('/api/login', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: "خطأ في السيرفر" }); }
 });
 
-// 1. رفع الصورة فوراً
+// رفع الصورة
 app.post('/api/upload-image', upload.single('image'), async (req, res) => {
     if (!s3Client) return res.status(500).json({ success: false });
     try {
@@ -64,47 +70,80 @@ app.post('/api/upload-image', upload.single('image'), async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// 2. إضافة أو تعديل الحساب
+// حفظ الحساب (مع الفصل الأمني القوي)
 app.post('/api/save-account', async (req, res) => {
     try {
         const { id, sellerName, title, email, password, bankPrice, webPrice, isGg, isGameCenter, imgUrl } = req.body;
         if (!sellerName || !title || !imgUrl) return res.status(400).json({ success: false });
 
-        const accountData = {
-            seller: sellerName, title, email: email || "", password: password || "",
-            bank_price: bankPrice || 0, price_web: webPrice,
-            gg: isGg || false, game_center: isGameCenter || false, img: imgUrl
+        // 1. البيانات العامة للمتجر الرئيسي (بدووون باسورد أو إيميل لحمايتها)
+        const publicData = {
+            seller: sellerName, 
+            title: title, 
+            bank_price: bankPrice || 0, 
+            price_web: webPrice,
+            gg: isGg || false, 
+            game_center: isGameCenter || false, 
+            img: imgUrl
+        };
+
+        // 2. البيانات الخاصة للبائع (توضع في مجلده السري وتتضمن كل شيء)
+        const privateData = {
+            ...publicData,
+            email: email || "", 
+            password: password || ""
         };
 
         if (id) {
-            await db.ref(`acc/${id}`).update(accountData);
+            // تحديث حساب موجود (نحدث في المجلدين معاً)
+            await db.ref(`acc/${id}`).update(publicData);
+            await db.ref(`sellers_data/${sellerName}/${id}`).update(privateData);
         } else {
+            // إنشاء حساب جديد كلياً
             const today = new Date();
-            accountData.timestamp = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()}`;
-            accountData.status = "available";
-            await db.ref('acc').push().set(accountData);
+            const timestamp = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()}`;
+            
+            publicData.timestamp = timestamp;
+            publicData.status = "available";
+            
+            privateData.timestamp = timestamp;
+            privateData.status = "available";
+
+            // إنشاء ID موحد
+            const newRef = db.ref('acc').push();
+            const newId = newRef.key;
+
+            // حقن البيانات في المجلدين في نفس اللحظة
+            const updates = {};
+            updates[`acc/${newId}`] = publicData;
+            updates[`sellers_data/${sellerName}/${newId}`] = privateData;
+            
+            await db.ref().update(updates);
         }
         res.json({ success: true });
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// 3. تغيير الحالة (مؤقت، مباع، حذف)
+// تحديث الحالة (تتحدث في المجلدين معاً بضربة واحدة)
 app.post('/api/update-status', async (req, res) => {
     try {
         const { id, status, sellerName } = req.body;
-        const accRef = db.ref(`acc/${id}`);
-        const snapshot = await accRef.once('value');
-        if (snapshot.exists() && snapshot.val().seller === sellerName) {
-            await accRef.update({ status: status });
-            res.json({ success: true });
-        } else { res.status(403).json({ success: false }); }
+        
+        const updates = {};
+        updates[`acc/${id}/status`] = status;
+        updates[`sellers_data/${sellerName}/${id}/status`] = status;
+        
+        await db.ref().update(updates);
+        
+        res.json({ success: true });
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// جلب حسابات بائع
+// جلب حسابات البائع (الآن نجلبها من مجلده الخاص والسري مباشرة!)
 app.get('/api/my-accounts/:sellerName', async (req, res) => {
     try {
-        const snapshot = await db.ref('acc').orderByChild('seller').equalTo(req.params.sellerName).once('value');
+        const { sellerName } = req.params;
+        const snapshot = await db.ref(`sellers_data/${sellerName}`).once('value');
         res.json({ success: true, data: snapshot.val() || {} });
     } catch (error) { res.status(500).json({ success: false }); }
 });
