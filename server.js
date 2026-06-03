@@ -79,9 +79,19 @@ app.post('/api/upload-image', upload.single('image'), async (req, res) => {
 
 app.post('/api/save-account', async (req, res) => {
     try {
-        // استقبال المفاتيح الجديدة بالتعديل المباشر
-        const { id, sellerName, title, desc, email, password, bankPrice, webPrice, isGg, isGameCenter, imgUrl, img, img2, img3, limit } = req.body;
-        if (!sellerName || !title) return res.status(400).json({ success: false, message: "بيانات ناقصة: اسم البائع والعنوان إجباريان" });
+        // استقبال المفتاح السري (sellerKey) للتحقق الأمني
+        const { id, sellerKey, title, desc, email, password, bankPrice, webPrice, isGg, isGameCenter, imgUrl, img, img2, img3, limit } = req.body;
+        
+        if (!sellerKey || !title) return res.status(400).json({ success: false, message: "بيانات ناقصة: المفتاح السري والعنوان إجباريان" });
+
+        // التحقق الأمني واستخراج اسم البائع الحقيقي (مثل hamza store)
+        const keysSnap = await db.ref('keys').once('value');
+        const keys = keysSnap.val();
+        let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
+
+        if (!sellerName) {
+            return res.status(401).json({ success: false, message: "مفتاح البائع غير صحيح، غير مصرح لك بالإضافة" });
+        }
 
         // التحقق الذكي لضمان التوافق بين الويب (imgUrl) والتطبيق (img)
         const primaryImg = img || imgUrl;
@@ -147,181 +157,3 @@ app.post('/api/mark-sold', async (req, res) => {
 
             const soldData = {
                 ...accData,
-                status: 'sold',
-                sell_date: sellDate,
-                final_sell_price: finalPrice
-            };
-
-            const updates = {};
-            updates[`acc/${id}/status`] = 'sold';
-            updates[`sellers_data/${sellerName}/${id}/status`] = 'sold';
-            updates[`sellers_data_sold/${sellerName}/${id}`] = soldData;
-
-            await db.ref().update(updates);
-            res.json({ success: true });
-        } else {
-            res.status(404).json({ success: false, message: "الحساب غير موجود بقاعدة البيانات" });
-        }
-    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
-});
-
-app.get('/api/my-accounts/:sellerName', async (req, res) => {
-    try {
-        const snapshot = await db.ref(`sellers_data/${req.params.sellerName}`).once('value');
-        res.json({ success: true, data: snapshot.val() || {} });
-    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
-});
-
-// =========================================================
-// مسارات التطبيق (Sketchware App) السرية والآمنة 100%
-// =========================================================
-
-// 1. جلب الحسابات النشطة (sellers_data) على شكل مصفوفة ListMap
-app.post('/api/app/get-active-accounts', async (req, res) => {
-    const { sellerKey } = req.body;
-    if (!sellerKey) return res.status(400).send("فشل الجلب بسبب: مفتاح البائع سري ومطلوب لإتمام العملية"); 
-
-    try {
-        const keysSnap = await db.ref('keys').once('value');
-        const keys = keysSnap.val();
-        let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
-
-        if (sellerName) {
-            await sendUpdatedActiveAccounts(res, sellerName);
-        } else {
-            res.status(401).send("فشل الجلب بسبب: مفتاح البائع المدخل غير صحيح وغير مصرح له"); 
-        }
-    } catch (error) { res.status(500).send(`فشل الجلب بسبب خطأ في السيرفر: ${error.message}`); }
-});
-
-// 2. جلب الحسابات المباعة (sellers_data_sold) على شكل مصفوفة ListMap
-app.post('/api/app/get-sold-accounts', async (req, res) => {
-    const { sellerKey } = req.body;
-    if (!sellerKey) return res.status(400).send("فشل الجلب بسبب: مفتاح البائع سري ومطلوب لإتمام العملية");
-
-    try {
-        const keysSnap = await db.ref('keys').once('value');
-        const keys = keysSnap.val();
-        let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
-
-        if (sellerName) {
-            const soldSnap = await db.ref(`sellers_data_sold/${sellerName}`).once('value');
-            const data = soldSnap.val() || {};
-            
-            const soldArray = Object.keys(data).map(key => {
-                return { key: key, ...data[key] };
-            }).filter(acc => acc.status !== 'delete').reverse();
-
-            res.send(soldArray); 
-        } else {
-            res.status(401).send("فشل الجلب بسبب: مفتاح البائع المدخل غير صحيح وغير مصرح له");
-        }
-    } catch (error) { res.status(500).send(`فشل الجلب بسبب خطأ في السيرفر: ${error.message}`); }
-});
-
-// 3. مسار ضبط وتعديل حالة الحساب (متاحavailable / مؤقتatt) + الإرجاع الفوري للمصفوفة المحدثة
-app.post('/api/app/set-account-status', async (req, res) => {
-    const { sellerKey, accountId, status } = req.body;
-    if (!sellerKey || !accountId || !status) return res.status(400).send("فشل تعديل الحالة بسبب: بيانات ناقصة (sellerKey, accountId, status)");
-
-    if (status !== 'available' && status !== 'att') {
-        return res.status(400).send("فشل تعديل الحالة بسبب: الحالة المرسلة غير مدعومة في هذا المسار، استخدم مسارات البيع أو الحذف المخصصة لها");
-    }
-
-    try {
-        const keysSnap = await db.ref('keys').once('value');
-        const keys = keysSnap.val();
-        let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
-
-        if (sellerName) {
-            const accRef = db.ref(`sellers_data/${sellerName}/${accountId}`);
-            const checkSnap = await accRef.once('value');
-            if (!checkSnap.exists()) return res.status(404).send("فشل تعديل الحالة بسبب: هذا الحساب غير موجود أو لا ينتمي لهذا البائع");
-
-            const updates = {};
-            updates[`acc/${accountId}/status`] = status;
-            updates[`sellers_data/${sellerName}/${accountId}/status`] = status;
-            await db.ref().update(updates);
-
-            await sendUpdatedActiveAccounts(res, sellerName);
-        } else {
-            res.status(401).send("فشل تعديل الحالة بسبب: مفتاح البائع المدخل غير صحيح وغير مصرح له");
-        }
-    } catch (error) { res.status(500).send(`فشل تعديل الحالة بسبب خطأ في السيرفر: ${error.message}`); }
-});
-
-// 4. مسار تسجيل عملية البيع النهائي (تم البيع sold) وتوثيق السعر + الإرجاع الفوري للمصفوفة المحدثة
-app.post('/api/app/set-account-sold', async (req, res) => {
-    const { sellerKey, accountId, sellPrice } = req.body;
-    if (!sellerKey || !accountId) return res.status(400).send("فشل عملية تسجيل البيع بسبب: بيانات ناقصة (sellerKey, accountId)");
-
-    try {
-        const keysSnap = await db.ref('keys').once('value');
-        const keys = keysSnap.val();
-        let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
-
-        if (sellerName) {
-            const accRef = db.ref(`sellers_data/${sellerName}/${accountId}`);
-            const snapshot = await accRef.once('value');
-
-            if (snapshot.exists()) {
-                const accData = snapshot.val();
-                const finalPrice = sellPrice && String(sellPrice).trim() !== "" ? parseFloat(sellPrice) : parseFloat(accData.price_web);
-                
-                const today = new Date();
-                const sellDate = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()} ${today.getHours()}:${today.getMinutes()}`;
-
-                const soldData = {
-                    ...accData,
-                    status: 'sold',
-                    sell_date: sellDate,
-                    final_sell_price: finalPrice
-                };
-
-                const updates = {};
-                updates[`acc/${accountId}/status`] = 'sold';
-                updates[`sellers_data/${sellerName}/${accountId}/status`] = 'sold';
-                updates[`sellers_data_sold/${sellerName}/${accountId}`] = soldData;
-
-                await db.ref().update(updates);
-
-                await sendUpdatedActiveAccounts(res, sellerName);
-            } else {
-                res.status(404).send("فشل عملية تسجيل البيع بسبب: هذا الحساب غير موجود أو لا ينتمي لهذا البائع");
-            }
-        } else {
-            res.status(401).send("فشل عملية تسجيل البيع بسبب: مفتاح البائع المدخل غير صحيح وغير مصرح له");
-        }
-    } catch (error) { res.status(500).send(`فشل عملية تسجيل البيع بسبب خطأ في السيرفر: ${error.message}`); }
-});
-
-// 5. مسار الحذف الصارم (تغيير الحالة إلى delete) + الإرجاع الفوري للمصفوفة المحدثة
-app.post('/api/app/delete-account', async (req, res) => {
-    const { sellerKey, accountId } = req.body;
-    if (!sellerKey || !accountId) return res.status(400).send("فشل الحذف بسبب: بيانات ناقصة (مفتاح البائع ومعرّف الحساب مطلوبان)");
-
-    try {
-        const keysSnap = await db.ref('keys').once('value');
-        const keys = keysSnap.val();
-        let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
-
-        if (sellerName) {
-            const accRef = db.ref(`sellers_data/${sellerName}/${accountId}`);
-            const checkSnap = await accRef.once('value');
-            if (!checkSnap.exists()) return res.status(404).send("فشل الحذف بسبب: هذا الحساب غير موجود أو لا ينتمي لهذا البائع");
-
-            const updates = {};
-            updates[`acc/${accountId}/status`] = 'delete';
-            updates[`sellers_data/${sellerName}/${accountId}/status`] = 'delete';
-            updates[`sellers_data_sold/${sellerName}/${accountId}/status`] = 'delete';
-
-            await db.ref().update(updates);
-
-            await sendUpdatedActiveAccounts(res, sellerName);
-        } else {
-            res.status(401).send("فشل الحذف بسبب: مفتاح البائع المدخل غير صحيح وغير مصرح له");
-        }
-    } catch (error) { res.status(500).send(`فشل الحذف بسبب خطأ داخلي في السيرفر: ${error.message}`); }
-});
-
-app.listen(process.env.PORT || 8080, '0.0.0.0', () => console.log(`🚀 Server running!`));
