@@ -1,3 +1,4 @@
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -78,10 +79,27 @@ app.post('/api/upload-image', upload.single('image'), async (req, res) => {
 
 app.post('/api/save-account', async (req, res) => {
     try {
-        const { id, sellerName, title, desc, email, password, bankPrice, webPrice, isGg, isGameCenter, imgUrl } = req.body;
-        if (!sellerName || !title || !imgUrl) return res.status(400).json({ success: false, message: "بيانات ناقصة: اسم البائع، العنوان والصورة إجبارية" });
+        // استقبال المفاتيح الجديدة بالتعديل المباشر
+        const { id, sellerName, title, desc, email, password, bankPrice, webPrice, isGg, isGameCenter, imgUrl, img, img2, img3, limit } = req.body;
+        if (!sellerName || !title) return res.status(400).json({ success: false, message: "بيانات ناقصة: اسم البائع والعنوان إجباريان" });
 
-        const publicData = { seller: sellerName, title, desc: desc || "", bank_price: bankPrice || 0, price_web: webPrice, gg: isGg || false, game_center: isGameCenter || false, img: imgUrl };
+        // التحقق الذكي لضمان التوافق بين الويب (imgUrl) والتطبيق (img)
+        const primaryImg = img || imgUrl;
+        if (!primaryImg) return res.status(400).json({ success: false, message: "بيانات ناقصة: يجب توفير رابط الصورة الأساسية للحساب" });
+
+        const publicData = { 
+            seller: sellerName, 
+            title, 
+            desc: desc || "", 
+            bank_price: bankPrice || 0, 
+            price_web: webPrice, 
+            gg: isGg || false, 
+            game_center: isGameCenter || false, 
+            img: primaryImg,
+            img2: img2 || "", // حفظ الصورة الثانوية الثانية
+            img3: img3 || "", // حفظ الصورة الثانوية الثالثة
+            limit: limit || "" // حفظ مفتاح الـ limit الجديد
+        };
         const privateData = { ...publicData, email: email || "", password: password || "" };
 
         if (id) {
@@ -225,7 +243,6 @@ app.post('/api/app/set-account-status', async (req, res) => {
             updates[`sellers_data/${sellerName}/${accountId}/status`] = status;
             await db.ref().update(updates);
 
-            // إرجاع المصفوفة الجديدة المحدثة تلقائياً للـ ListView الخاص بك
             await sendUpdatedActiveAccounts(res, sellerName);
         } else {
             res.status(401).send("فشل تعديل الحالة بسبب: مفتاح البائع المدخل غير صحيح وغير مصرح له");
@@ -268,7 +285,6 @@ app.post('/api/app/set-account-sold', async (req, res) => {
 
                 await db.ref().update(updates);
 
-                // إرجاع المصفوفة الجديدة المحدثة تلقائياً للـ ListView الخاص بك
                 await sendUpdatedActiveAccounts(res, sellerName);
             } else {
                 res.status(404).send("فشل عملية تسجيل البيع بسبب: هذا الحساب غير موجود أو لا ينتمي لهذا البائع");
@@ -301,7 +317,6 @@ app.post('/api/app/delete-account', async (req, res) => {
 
             await db.ref().update(updates);
 
-            // إرجاع المصفوفة الجديدة المحدثة تلقائياً للـ ListView الخاص بك
             await sendUpdatedActiveAccounts(res, sellerName);
         } else {
             res.status(401).send("فشل الحذف بسبب: مفتاح البائع المدخل غير صحيح وغير مصرح له");
