@@ -44,11 +44,9 @@ const upload = multer({ storage: multer.memoryStorage() });
 // خوارزمية الفرز المتقدم وتجهيز الرد للتطبيق (الأساسي)
 // =========================================================
 async function sendUpdatedActiveAccounts(res, sellerName) {
-    // جلب الحسابات
     const snapshot = await db.ref(`sellers_data/${sellerName}`).once('value');
     const data = snapshot.val() || {};
     
-    // جلب مشاهدات اليوم الشاملة
     const statsSnap = await db.ref(`sellers_stats/${sellerName}`).once('value');
     const viewDay = (statsSnap.val() && statsSnap.val().view_day) ? statsSnap.val().view_day : 0;
 
@@ -56,27 +54,22 @@ async function sendUpdatedActiveAccounts(res, sellerName) {
         return { key: key, ...data[key] };
     }).filter(acc => acc.status !== 'delete');
 
-    // خوارزمية الترتيب الاحترافية
     accountsArray.sort((a, b) => {
         const order = { 'available': 1, 'att': 2, 'sold': 3 };
         const stA = order[a.status] || 4;
         const stB = order[b.status] || 4;
 
-        // 1. الترتيب الأساسي حسب الحالة
         if (stA !== stB) return stA - stB;
 
-        // 2. إذا كانت الحالة (متاح) أو (مؤقت)، نرتب حسب ثمن الشراء (bank_price) من الأكبر للأصغر
         if (a.status === 'available' || a.status === 'att') {
             const pA = parseFloat(a.bank_price) || 0;
             const pB = parseFloat(b.bank_price) || 0;
             return pB - pA;
         }
 
-        // 3. إذا كانت الحالة (مباع)، نرتب حسب تاريخ البيع (sell_date) من الأحدث للأقدم
         if (a.status === 'sold') {
             const parseD = (d) => {
                 if(!d) return 0;
-                // تقسيم التاريخ "DD-MM-YYYY HH:mm"
                 const p = d.split(/[ \-:]/); 
                 if(p.length >= 5) return new Date(p[2], p[1]-1, p[0], p[3], p[4]).getTime();
                 return 0;
@@ -86,7 +79,6 @@ async function sendUpdatedActiveAccounts(res, sellerName) {
         return 0;
     });
 
-    // إرسال الكائن النهائي (المشاهدات + المصفوفة)
     return res.json({
         view_day: viewDay,
         accounts: accountsArray
@@ -146,7 +138,6 @@ app.post('/api/save-account', async (req, res) => {
             const today = new Date();
             const timestamp = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()}`;
             
-            // إضافة مفتاح المشاهدات الفردي للحساب الجديد
             publicData.view = 0;
             privateData.view = 0;
             
@@ -206,6 +197,23 @@ app.get('/api/my-accounts/:sellerName', async (req, res) => {
 // =========================================================
 // مسارات التطبيق (Sketchware App)
 // =========================================================
+
+// مسار التحقق من المفتاح السري (مباشر)
+app.post('/api/app/verify-key', async (req, res) => {
+    const { sellerKey } = req.body;
+    if (!sellerKey) return res.send("false");
+    try {
+        const keysSnap = await db.ref('keys').once('value');
+        const keys = keysSnap.val();
+        let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
+        
+        if (sellerName) {
+            res.send("true");
+        } else {
+            res.send("false");
+        }
+    } catch (error) { res.send("false"); }
+});
 
 app.post('/api/app/get-active-accounts', async (req, res) => {
     const { sellerKey } = req.body;
@@ -300,7 +308,6 @@ app.post('/api/app/delete-account', async (req, res) => {
     } catch (error) { res.status(500).send(`خطأ: ${error.message}`); }
 });
 
-// المسار الجديد: تعديل جميع بيانات الحساب دفعة واحدة (Bulk Edit)
 app.post('/api/app/edit-account', async (req, res) => {
     const { sellerKey, accountId, title, desc, webPrice, bankPrice, email, password, isGg, isGameCenter, img, img2, img3, limit } = req.body;
     if (!sellerKey || !accountId) return res.status(400).send("فشل التعديل: المفتاح السري والمعرف مطلوبان");
@@ -317,7 +324,6 @@ app.post('/api/app/edit-account', async (req, res) => {
             
             const existingData = checkSnap.val();
 
-            // تجهيز البيانات العامة المحدثة (يتم تجاهل أي قيمة غير مرسلة والإبقاء على القديمة)
             const publicData = {};
             if (title !== undefined) publicData.title = title;
             if (desc !== undefined) publicData.desc = desc;
@@ -330,24 +336,18 @@ app.post('/api/app/edit-account', async (req, res) => {
             if (img3 !== undefined) publicData.img3 = img3;
             if (limit !== undefined) publicData.limit = limit;
 
-            // تجهيز البيانات الخاصة المحدثة
             const privateData = { ...publicData };
             if (email !== undefined) privateData.email = email;
             if (password !== undefined) privateData.password = password;
 
             const updates = {};
-            // تحديث الحساب العام
             for (let k in publicData) updates[`acc/${accountId}/${k}`] = publicData[k];
-            // تحديث حساب البائع السري
             for (let k in privateData) updates[`sellers_data/${sellerName}/${accountId}/${k}`] = privateData[k];
-            // تحديث الأرشيف إذا كان مباعاً
             if (existingData.status === 'sold') {
                 for (let k in privateData) updates[`sellers_data_sold/${sellerName}/${accountId}/${k}`] = privateData[k];
             }
 
             await db.ref().update(updates);
-            
-            // إعادة المصفوفة المحدثة
             await sendUpdatedActiveAccounts(res, sellerName);
         } else {
             res.status(401).send("فشل التعديل: غير مصرح لك");
