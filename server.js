@@ -113,7 +113,8 @@ app.post('/api/upload-image', upload.single('image'), async (req, res) => {
 
 app.post('/api/save-account', async (req, res) => {
     try {
-        const { id, sellerKey, title, desc, email, password, bankPrice, webPrice, isGg, isGameCenter, imgUrl, img, img2, img3, limit } = req.body;
+        // إضافة price_bot في استقبال البيانات
+        const { id, sellerKey, title, desc, email, password, bankPrice, webPrice, price_bot, isGg, isGameCenter, imgUrl, img, img2, img3, limit } = req.body;
         if (!sellerKey || !title) return res.status(400).json({ success: false, message: "بيانات ناقصة" });
 
         const keysSnap = await db.ref('keys').once('value');
@@ -126,6 +127,7 @@ app.post('/api/save-account', async (req, res) => {
 
         const publicData = { 
             seller: sellerName, title, desc: desc || "", bank_price: bankPrice || 0, price_web: webPrice, 
+            price_bot: price_bot || "", // حفظ سعر البوت الجديد
             gg: isGg || false, game_center: isGameCenter || false, 
             img: primaryImg, img2: img2 || "", img3: img3 || "", limit: limit || "" 
         };
@@ -167,7 +169,8 @@ app.post('/api/update-status', async (req, res) => {
 
 app.post('/api/mark-sold', async (req, res) => {
     try {
-        const { id, sellerName, sellPrice } = req.body;
+        // استقبال price_bot عند البيع من الويب
+        const { id, sellerName, sellPrice, price_bot } = req.body;
         const accRef = db.ref(`sellers_data/${sellerName}/${id}`);
         const snapshot = await accRef.once('value');
 
@@ -176,11 +179,24 @@ app.post('/api/mark-sold', async (req, res) => {
             const finalPrice = sellPrice && String(sellPrice).trim() !== "" ? parseFloat(sellPrice) : parseFloat(accData.price_web);
             const today = new Date();
             const sellDate = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()} ${today.getHours()}:${today.getMinutes()}`;
+            
             const soldData = { ...accData, status: 'sold', sell_date: sellDate, final_sell_price: finalPrice };
+            
+            // إذا تم إرسال سعر البوت عند البيع يتم توثيقه
+            if (price_bot !== undefined) {
+                soldData.price_bot = price_bot;
+            }
+
             const updates = {};
             updates[`acc/${id}/status`] = 'sold';
             updates[`sellers_data/${sellerName}/${id}/status`] = 'sold';
             updates[`sellers_data_sold/${sellerName}/${id}`] = soldData;
+            
+            if (price_bot !== undefined) {
+                updates[`acc/${id}/price_bot`] = price_bot;
+                updates[`sellers_data/${sellerName}/${id}/price_bot`] = price_bot;
+            }
+
             await db.ref().update(updates);
             res.json({ success: true });
         } else { res.status(404).json({ success: false, message: "الحساب غير موجود" }); }
@@ -198,7 +214,6 @@ app.get('/api/my-accounts/:sellerName', async (req, res) => {
 // مسارات التطبيق (Sketchware App)
 // =========================================================
 
-// مسار التحقق من المفتاح السري (مباشر)
 app.post('/api/app/verify-key', async (req, res) => {
     const { sellerKey } = req.body;
     if (!sellerKey) return res.send("false");
@@ -262,7 +277,8 @@ app.post('/api/app/set-account-status', async (req, res) => {
 });
 
 app.post('/api/app/set-account-sold', async (req, res) => {
-    const { sellerKey, accountId, sellPrice } = req.body;
+    // استقبال مفتاح price_bot عند البيع من التطبيق
+    const { sellerKey, accountId, sellPrice, price_bot } = req.body;
     if (!sellerKey || !accountId) return res.status(400).send("بيانات ناقصة");
     try {
         const keysSnap = await db.ref('keys').once('value');
@@ -277,11 +293,22 @@ app.post('/api/app/set-account-sold', async (req, res) => {
                 const finalPrice = sellPrice && String(sellPrice).trim() !== "" ? parseFloat(sellPrice) : parseFloat(accData.price_web);
                 const today = new Date();
                 const sellDate = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()} ${today.getHours()}:${today.getMinutes()}`;
+                
                 const soldData = { ...accData, status: 'sold', sell_date: sellDate, final_sell_price: finalPrice };
+                if (price_bot !== undefined) {
+                    soldData.price_bot = price_bot;
+                }
+
                 const updates = {};
                 updates[`acc/${accountId}/status`] = 'sold';
                 updates[`sellers_data/${sellerName}/${accountId}/status`] = 'sold';
                 updates[`sellers_data_sold/${sellerName}/${accountId}`] = soldData;
+                
+                if (price_bot !== undefined) {
+                    updates[`acc/${accountId}/price_bot`] = price_bot;
+                    updates[`sellers_data/${sellerName}/${accountId}/price_bot`] = price_bot;
+                }
+
                 await db.ref().update(updates);
                 await sendUpdatedActiveAccounts(res, sellerName);
             } else { res.status(404).send("حساب غير موجود"); }
@@ -309,7 +336,8 @@ app.post('/api/app/delete-account', async (req, res) => {
 });
 
 app.post('/api/app/edit-account', async (req, res) => {
-    const { sellerKey, accountId, title, desc, webPrice, bankPrice, email, password, isGg, isGameCenter, img, img2, img3, limit } = req.body;
+    // إضافة price_bot لكي يدعم التعديل الشامل أيضاً
+    const { sellerKey, accountId, title, desc, webPrice, bankPrice, price_bot, email, password, isGg, isGameCenter, img, img2, img3, limit } = req.body;
     if (!sellerKey || !accountId) return res.status(400).send("فشل التعديل: المفتاح السري والمعرف مطلوبان");
 
     try {
@@ -329,6 +357,7 @@ app.post('/api/app/edit-account', async (req, res) => {
             if (desc !== undefined) publicData.desc = desc;
             if (bankPrice !== undefined) publicData.bank_price = bankPrice;
             if (webPrice !== undefined) publicData.price_web = webPrice;
+            if (price_bot !== undefined) publicData.price_bot = price_bot; // تحديث سعر البوت
             if (isGg !== undefined) publicData.gg = isGg;
             if (isGameCenter !== undefined) publicData.game_center = isGameCenter;
             if (img !== undefined) publicData.img = img;
