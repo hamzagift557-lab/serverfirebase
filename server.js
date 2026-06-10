@@ -96,7 +96,20 @@ app.post('/api/login', async (req, res) => {
         const snapshot = await db.ref('keys').once('value');
         const keys = snapshot.val();
         let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
-        if (sellerName) res.json({ success: true, sellerName });
+        if (sellerName) {
+            // إضافة ميزة إنشاء مجلد information de clien تلقائياً
+            const infoRef = db.ref(`information de clien/${sellerName}`);
+            const infoSnap = await infoRef.once('value');
+            if (!infoSnap.exists()) {
+                await infoRef.set({
+                    email: "",
+                    link: "",
+                    json: "[]"
+                });
+            }
+
+            res.json({ success: true, sellerName });
+        }
         else res.status(401).json({ success: false, message: "المفتاح غير صحيح" });
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 });
@@ -220,6 +233,17 @@ app.post('/api/app/verify-key', async (req, res) => {
         let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
         
         if (sellerName) {
+            // إضافة ميزة إنشاء مجلد information de clien تلقائياً لتطبيق Sketchware
+            const infoRef = db.ref(`information de clien/${sellerName}`);
+            const infoSnap = await infoRef.once('value');
+            if (!infoSnap.exists()) {
+                await infoRef.set({
+                    email: "",
+                    link: "",
+                    json: "[]"
+                });
+            }
+
             res.send("true");
         } else {
             res.send("false");
@@ -383,7 +407,6 @@ app.post('/api/app/edit-account', async (req, res) => {
 // مسارات معلومات العميل (Information de clien)
 // =========================================================
 
-// 1. مسار عرض بيانات العميل
 app.post('/api/app/get-client-info', async (req, res) => {
     const { sellerKey } = req.body;
     if (!sellerKey) return res.send("false");
@@ -396,7 +419,6 @@ app.post('/api/app/get-client-info', async (req, res) => {
         if (sellerName) {
             const infoSnap = await db.ref(`information de clien/${sellerName}`).once('value');
             if (infoSnap.exists()) {
-                // إرجاع البيانات في Array لكي يعمل كود Gson الخاص بك فوراً
                 res.send(JSON.stringify([infoSnap.val()]));
             } else {
                 res.send("false");
@@ -409,7 +431,6 @@ app.post('/api/app/get-client-info', async (req, res) => {
     }
 });
 
-// 2. مسار نشر (حفظ) بيانات العميل
 app.post('/api/app/save-client-info', async (req, res) => {
     const { sellerKey, email, link, json } = req.body;
     if (!sellerKey) return res.status(400).send("بيانات ناقصة");
@@ -435,7 +456,6 @@ app.post('/api/app/save-client-info', async (req, res) => {
     }
 });
 
-// 3. مسار تعديل بيانات العميل
 app.post('/api/app/edit-client-info', async (req, res) => {
     const { sellerKey, email, link, json } = req.body;
     if (!sellerKey) return res.status(400).send("بيانات ناقصة");
