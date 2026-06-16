@@ -12,9 +12,6 @@ app.use(express.json());
 let db = null;
 let s3Client = null;
 
-// =========================================================
-// دالة توليد Key عشوائي 50 حرفاً وأرقام
-// =========================================================
 const generateSecureKey = () => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     let result = '';
@@ -38,7 +35,6 @@ try {
             if (!snapshot.exists()) db.ref('keys').set(initialKeys);
         });
 
-        // 🔥 سكربت يشتغل مرة واحدة لإضافة "key" للحسابات القديمة التي لا تحتويه
         db.ref('acc').once('value', async (snap) => {
             if (snap.exists()) {
                 const accs = snap.val();
@@ -53,7 +49,6 @@ try {
                 }
                 if (Object.keys(updates).length > 0) {
                     await db.ref().update(updates);
-                    console.log("✅ [System] تم إضافة المفتاح key لجميع الحسابات القديمة بنجاح.");
                 }
             }
         });
@@ -73,20 +68,19 @@ try {
 const upload = multer({ storage: multer.memoryStorage() });
 
 // =========================================================
-// خوارزمية الفرز المتقدم وتجهيز الرد للتطبيق (الأساسي)
+// 🔥 تم التعديل: حساب مجموع المشاهدات (view_day) الكلي
 // =========================================================
 async function sendUpdatedActiveAccounts(res, sellerName) {
     const snapshot = await db.ref(`sellers_data/${sellerName}`).once('value');
     const data = snapshot.val() || {};
     
-    const statsSnap = await db.ref(`sellers_stats/${sellerName}`).once('value');
-    const viewDay = (statsSnap.val() && statsSnap.val().view_day) ? statsSnap.val().view_day : 0;
+    let totalViews = 0; // المتغير الذي يجمع كل المشاهدات
 
     const accountsArray = Object.keys(data).map(key => {
+        totalViews += (parseInt(data[key].view) || 0); // جمع مشاهدات كل حساب
         return { key: key, ...data[key] };
     }).filter(acc => acc.status !== 'delete');
 
-    // 🔥 فرز دقيق يعتمد على حالة الحساب ثم تاريخ البيع (sell_date)
     accountsArray.sort((a, b) => {
         const order = { 'available': 1, 'att': 2, 'sold': 3 };
         const stA = order[a.status] || 4;
@@ -94,11 +88,9 @@ async function sendUpdatedActiveAccounts(res, sellerName) {
 
         if (stA !== stB) return stA - stB;
 
-        // إذا كانت الحسابات مباعة، يتم فرزها من الأحدث للأقدم بناءً على تاريخ البيع
         if (a.status === 'sold') {
             const parseD = (d) => {
                 if(!d) return 0;
-                // صيغة التاريخ: 10-06-2026 11:29
                 const p = d.split(/[ \-:]/); 
                 if(p.length >= 5) return new Date(p[2], p[1]-1, p[0], p[3], p[4]).getTime();
                 return 0;
@@ -106,7 +98,6 @@ async function sendUpdatedActiveAccounts(res, sellerName) {
             return parseD(b.sell_date) - parseD(a.sell_date);
         }
 
-        // إذا كانت متاحة، فرز حسب السعر كما هو معتاد (أو يمكنك تغييرها)
         if (a.status === 'available' || a.status === 'att') {
             const pA = parseFloat(a.bank_price) || 0;
             const pB = parseFloat(b.bank_price) || 0;
@@ -117,14 +108,11 @@ async function sendUpdatedActiveAccounts(res, sellerName) {
     });
 
     return res.json({
-        view_day: viewDay,
+        view_day: totalViews, // إرسال المجموع الكلي هنا ليقرأه سكتشوير
         accounts: accountsArray
     });
 }
 
-// =========================================================
-// مسار زيادة المشاهدات (مخصص للموقع)
-// =========================================================
 app.post('/api/increment-view', async (req, res) => {
     const { seller, id } = req.body;
     if (!seller || !id) return res.json({ success: false });
@@ -198,7 +186,6 @@ app.post('/api/save-account', async (req, res) => {
             const today = new Date();
             const timestamp = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()}`;
             
-            // 🔥 إنشاء الـ Key المكون من 50 حرف وإضافته للبيانات
             const newId = generateSecureKey();
             
             publicData.view = 0;
@@ -248,7 +235,6 @@ app.post('/api/mark-sold', async (req, res) => {
             }
 
             const updates = {};
-            // 🔥 عند البيع نقوم بإزالته فعلياً من مجلد العرض العام ليخف الضغط
             updates[`acc/${id}`] = null; 
             updates[`sellers_data/${sellerName}/${id}/status`] = 'sold';
             updates[`sellers_data_sold/${sellerName}/${id}`] = soldData;
@@ -307,6 +293,7 @@ app.post('/api/app/get-active-accounts', async (req, res) => {
     } catch (error) { res.status(500).send(`خطأ: ${error.message}`); }
 });
 
+// 🔥 تم التعديل: الفلترة حسب تاريخ البيع
 app.post('/api/app/get-sold-accounts', async (req, res) => {
     const { sellerKey } = req.body;
     if (!sellerKey) return res.status(400).send("مفتاح البائع مطلوب");
@@ -318,7 +305,19 @@ app.post('/api/app/get-sold-accounts', async (req, res) => {
         if (sellerName) {
             const soldSnap = await db.ref(`sellers_data_sold/${sellerName}`).once('value');
             const data = soldSnap.val() || {};
-            const soldArray = Object.keys(data).map(key => ({ key: key, ...data[key] })).filter(acc => acc.status !== 'delete').reverse();
+            const soldArray = Object.keys(data).map(key => ({ key: key, ...data[key] })).filter(acc => acc.status !== 'delete');
+            
+            // الفرز الدقيق بناءً على sell_date من الأحدث للأقدم
+            soldArray.sort((a, b) => {
+                const parseD = (d) => {
+                    if(!d) return 0;
+                    const p = d.split(/[ \-:]/); 
+                    if(p.length >= 5) return new Date(p[2], p[1]-1, p[0], p[3], p[4]).getTime();
+                    return 0;
+                }
+                return parseD(b.sell_date) - parseD(a.sell_date);
+            });
+            
             res.send(soldArray); 
         } else { res.status(401).send("غير مصرح لك"); }
     } catch (error) { res.status(500).send(`خطأ: ${error.message}`); }
@@ -333,7 +332,6 @@ app.post('/api/app/set-account-status', async (req, res) => {
         let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
         if (sellerName) {
             const updates = {};
-            // 🔥 إذا كانت الحالة ليست Available، نحذفها فعلياً من acc
             if (status !== 'available') {
                 updates[`acc/${accountId}`] = null;
             } else {
@@ -369,7 +367,6 @@ app.post('/api/app/set-account-sold', async (req, res) => {
                 }
 
                 const updates = {};
-                // 🔥 حذف كلي من المجلد العام عند البيع
                 updates[`acc/${accountId}`] = null;
                 updates[`sellers_data/${sellerName}/${accountId}/status`] = 'sold';
                 updates[`sellers_data_sold/${sellerName}/${accountId}`] = soldData;
@@ -395,7 +392,6 @@ app.post('/api/app/delete-account', async (req, res) => {
 
         if (sellerName) {
             const updates = {};
-            // 🔥 حذف كلي من المجلد العام!
             updates[`acc/${accountId}`] = null;
             updates[`sellers_data/${sellerName}/${accountId}/status`] = 'delete';
             updates[`sellers_data_sold/${sellerName}/${accountId}/status`] = 'delete';
@@ -456,10 +452,6 @@ app.post('/api/app/edit-account', async (req, res) => {
         }
     } catch (error) { res.status(500).send(`فشل التعديل بسبب خطأ داخلي: ${error.message}`); }
 });
-
-// =========================================================
-// مسارات معلومات العميل (Information de clien)
-// =========================================================
 
 app.post('/api/app/get-client-info', async (req, res) => {
     const { sellerKey } = req.body;
