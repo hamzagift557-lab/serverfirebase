@@ -12,6 +12,18 @@ app.use(express.json());
 let db = null;
 let s3Client = null;
 
+// =========================================================
+// دالة توليد Key عشوائي 50 حرفاً وأرقام
+// =========================================================
+const generateSecureKey = () => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let result = '';
+    for (let i = 0; i < 50; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+};
+
 try {
     if (process.env.FIREBASE_SERVICE_ACCOUNT) {
         const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -24,6 +36,26 @@ try {
         const initialKeys = { "hamza store": "hamzax1", "forlan shop": "forlanx1", "lwajdi": "wajdix1" };
         db.ref('keys').once('value', snapshot => {
             if (!snapshot.exists()) db.ref('keys').set(initialKeys);
+        });
+
+        // 🔥 سكربت يشتغل مرة واحدة لإضافة "key" للحسابات القديمة التي لا تحتويه
+        db.ref('acc').once('value', async (snap) => {
+            if (snap.exists()) {
+                const accs = snap.val();
+                let updates = {};
+                for (let id in accs) {
+                    if (id !== "bot_menu" && !accs[id].key) {
+                        updates[`acc/${id}/key`] = id;
+                        if (accs[id].seller) {
+                            updates[`sellers_data/${accs[id].seller}/${id}/key`] = id;
+                        }
+                    }
+                }
+                if (Object.keys(updates).length > 0) {
+                    await db.ref().update(updates);
+                    console.log("✅ [System] تم إضافة المفتاح key لجميع الحسابات القديمة بنجاح.");
+                }
+            }
         });
     }
 } catch (error) { console.error("Firebase Error:", error.message); }
@@ -54,6 +86,7 @@ async function sendUpdatedActiveAccounts(res, sellerName) {
         return { key: key, ...data[key] };
     }).filter(acc => acc.status !== 'delete');
 
+    // 🔥 فرز دقيق يعتمد على حالة الحساب ثم تاريخ البيع (sell_date)
     accountsArray.sort((a, b) => {
         const order = { 'available': 1, 'att': 2, 'sold': 3 };
         const stA = order[a.status] || 4;
@@ -61,21 +94,25 @@ async function sendUpdatedActiveAccounts(res, sellerName) {
 
         if (stA !== stB) return stA - stB;
 
-        if (a.status === 'available' || a.status === 'att') {
-            const pA = parseFloat(a.bank_price) || 0;
-            const pB = parseFloat(b.bank_price) || 0;
-            return pB - pA;
-        }
-
+        // إذا كانت الحسابات مباعة، يتم فرزها من الأحدث للأقدم بناءً على تاريخ البيع
         if (a.status === 'sold') {
             const parseD = (d) => {
                 if(!d) return 0;
+                // صيغة التاريخ: 10-06-2026 11:29
                 const p = d.split(/[ \-:]/); 
                 if(p.length >= 5) return new Date(p[2], p[1]-1, p[0], p[3], p[4]).getTime();
                 return 0;
             }
             return parseD(b.sell_date) - parseD(a.sell_date);
         }
+
+        // إذا كانت متاحة، فرز حسب السعر كما هو معتاد (أو يمكنك تغييرها)
+        if (a.status === 'available' || a.status === 'att') {
+            const pA = parseFloat(a.bank_price) || 0;
+            const pB = parseFloat(b.bank_price) || 0;
+            return pB - pA;
+        }
+
         return 0;
     });
 
@@ -84,6 +121,21 @@ async function sendUpdatedActiveAccounts(res, sellerName) {
         accounts: accountsArray
     });
 }
+
+// =========================================================
+// مسار زيادة المشاهدات (مخصص للموقع)
+// =========================================================
+app.post('/api/increment-view', async (req, res) => {
+    const { seller, id } = req.body;
+    if (!seller || !id) return res.json({ success: false });
+    try {
+        await db.ref(`acc/${id}/view`).set(admin.database.ServerValue.increment(1));
+        await db.ref(`sellers_data/${seller}/${id}/view`).set(admin.database.ServerValue.increment(1));
+        res.json({ success: true });
+    } catch (e) {
+        res.json({ success: false });
+    }
+});
 
 // =========================================================
 // مسارات لوحة التحكم (الويب)
@@ -97,17 +149,11 @@ app.post('/api/login', async (req, res) => {
         const keys = snapshot.val();
         let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
         if (sellerName) {
-            // إضافة ميزة إنشاء مجلد information de clien تلقائياً
             const infoRef = db.ref(`information de clien/${sellerName}`);
             const infoSnap = await infoRef.once('value');
             if (!infoSnap.exists()) {
-                await infoRef.set({
-                    email: "",
-                    link: "",
-                    json: "[]"
-                });
+                await infoRef.set({ email: "", link: "", json: "[]" });
             }
-
             res.json({ success: true, sellerName });
         }
         else res.status(401).json({ success: false, message: "المفتاح غير صحيح" });
@@ -152,13 +198,17 @@ app.post('/api/save-account', async (req, res) => {
             const today = new Date();
             const timestamp = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()}`;
             
+            // 🔥 إنشاء الـ Key المكون من 50 حرف وإضافته للبيانات
+            const newId = generateSecureKey();
+            
             publicData.view = 0;
+            publicData.key = newId;
             privateData.view = 0;
+            privateData.key = newId;
             
             publicData.timestamp = timestamp; publicData.status = "available";
             privateData.timestamp = timestamp; privateData.status = "available";
 
-            const newId = db.ref('acc').push().key;
             const updates = {};
             updates[`acc/${newId}`] = publicData;
             updates[`sellers_data/${sellerName}/${newId}`] = privateData;
@@ -198,12 +248,12 @@ app.post('/api/mark-sold', async (req, res) => {
             }
 
             const updates = {};
-            updates[`acc/${id}/status`] = 'sold';
+            // 🔥 عند البيع نقوم بإزالته فعلياً من مجلد العرض العام ليخف الضغط
+            updates[`acc/${id}`] = null; 
             updates[`sellers_data/${sellerName}/${id}/status`] = 'sold';
             updates[`sellers_data_sold/${sellerName}/${id}`] = soldData;
             
             if (price_bot !== undefined) {
-                updates[`acc/${id}/price_bot`] = price_bot;
                 updates[`sellers_data/${sellerName}/${id}/price_bot`] = price_bot;
             }
 
@@ -233,17 +283,11 @@ app.post('/api/app/verify-key', async (req, res) => {
         let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
         
         if (sellerName) {
-            // إضافة ميزة إنشاء مجلد information de clien تلقائياً لتطبيق Sketchware
             const infoRef = db.ref(`information de clien/${sellerName}`);
             const infoSnap = await infoRef.once('value');
             if (!infoSnap.exists()) {
-                await infoRef.set({
-                    email: "",
-                    link: "",
-                    json: "[]"
-                });
+                await infoRef.set({ email: "", link: "", json: "[]" });
             }
-
             res.send("true");
         } else {
             res.send("false");
@@ -289,7 +333,12 @@ app.post('/api/app/set-account-status', async (req, res) => {
         let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
         if (sellerName) {
             const updates = {};
-            updates[`acc/${accountId}/status`] = status;
+            // 🔥 إذا كانت الحالة ليست Available، نحذفها فعلياً من acc
+            if (status !== 'available') {
+                updates[`acc/${accountId}`] = null;
+            } else {
+                updates[`acc/${accountId}/status`] = status;
+            }
             updates[`sellers_data/${sellerName}/${accountId}/status`] = status;
             await db.ref().update(updates);
             await sendUpdatedActiveAccounts(res, sellerName);
@@ -320,12 +369,12 @@ app.post('/api/app/set-account-sold', async (req, res) => {
                 }
 
                 const updates = {};
-                updates[`acc/${accountId}/status`] = 'sold';
+                // 🔥 حذف كلي من المجلد العام عند البيع
+                updates[`acc/${accountId}`] = null;
                 updates[`sellers_data/${sellerName}/${accountId}/status`] = 'sold';
                 updates[`sellers_data_sold/${sellerName}/${accountId}`] = soldData;
                 
                 if (price_bot !== undefined) {
-                    updates[`acc/${accountId}/price_bot`] = price_bot;
                     updates[`sellers_data/${sellerName}/${accountId}/price_bot`] = price_bot;
                 }
 
@@ -346,7 +395,8 @@ app.post('/api/app/delete-account', async (req, res) => {
 
         if (sellerName) {
             const updates = {};
-            updates[`acc/${accountId}/status`] = 'delete';
+            // 🔥 حذف كلي من المجلد العام!
+            updates[`acc/${accountId}`] = null;
             updates[`sellers_data/${sellerName}/${accountId}/status`] = 'delete';
             updates[`sellers_data_sold/${sellerName}/${accountId}/status`] = 'delete';
             await db.ref().update(updates);
@@ -389,7 +439,11 @@ app.post('/api/app/edit-account', async (req, res) => {
             if (password !== undefined) privateData.password = password;
 
             const updates = {};
-            for (let k in publicData) updates[`acc/${accountId}/${k}`] = publicData[k];
+            
+            if (existingData.status === 'available') {
+                for (let k in publicData) updates[`acc/${accountId}/${k}`] = publicData[k];
+            }
+            
             for (let k in privateData) updates[`sellers_data/${sellerName}/${accountId}/${k}`] = privateData[k];
             if (existingData.status === 'sold') {
                 for (let k in privateData) updates[`sellers_data_sold/${sellerName}/${accountId}/${k}`] = privateData[k];
