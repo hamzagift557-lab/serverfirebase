@@ -67,17 +67,14 @@ try {
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-// =========================================================
-// 🔥 تم التعديل: حساب مجموع المشاهدات (view_day) الكلي
-// =========================================================
 async function sendUpdatedActiveAccounts(res, sellerName) {
     const snapshot = await db.ref(`sellers_data/${sellerName}`).once('value');
     const data = snapshot.val() || {};
     
-    let totalViews = 0; // المتغير الذي يجمع كل المشاهدات
+    let totalViews = 0; 
 
     const accountsArray = Object.keys(data).map(key => {
-        totalViews += (parseInt(data[key].view) || 0); // جمع مشاهدات كل حساب
+        totalViews += (parseInt(data[key].view) || 0); 
         return { key: key, ...data[key] };
     }).filter(acc => acc.status !== 'delete');
 
@@ -108,7 +105,7 @@ async function sendUpdatedActiveAccounts(res, sellerName) {
     });
 
     return res.json({
-        view_day: totalViews, // إرسال المجموع الكلي هنا ليقرأه سكتشوير
+        view_day: totalViews, 
         accounts: accountsArray
     });
 }
@@ -124,10 +121,6 @@ app.post('/api/increment-view', async (req, res) => {
         res.json({ success: false });
     }
 });
-
-// =========================================================
-// مسارات لوحة التحكم (الويب)
-// =========================================================
 
 app.post('/api/login', async (req, res) => {
     if (!db) return res.status(500).json({ success: false, message: "السيرفر غير متصل بفايربيس" });
@@ -256,10 +249,6 @@ app.get('/api/my-accounts/:sellerName', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 });
 
-// =========================================================
-// مسارات التطبيق (Sketchware App)
-// =========================================================
-
 app.post('/api/app/verify-key', async (req, res) => {
     const { sellerKey } = req.body;
     if (!sellerKey) return res.send("false");
@@ -293,7 +282,6 @@ app.post('/api/app/get-active-accounts', async (req, res) => {
     } catch (error) { res.status(500).send(`خطأ: ${error.message}`); }
 });
 
-// 🔥 تم التعديل: الفلترة حسب تاريخ البيع
 app.post('/api/app/get-sold-accounts', async (req, res) => {
     const { sellerKey } = req.body;
     if (!sellerKey) return res.status(400).send("مفتاح البائع مطلوب");
@@ -307,7 +295,6 @@ app.post('/api/app/get-sold-accounts', async (req, res) => {
             const data = soldSnap.val() || {};
             const soldArray = Object.keys(data).map(key => ({ key: key, ...data[key] })).filter(acc => acc.status !== 'delete');
             
-            // الفرز الدقيق بناءً على sell_date من الأحدث للأقدم
             soldArray.sort((a, b) => {
                 const parseD = (d) => {
                     if(!d) return 0;
@@ -527,4 +514,57 @@ app.post('/api/app/edit-client-info', async (req, res) => {
     }
 });
 
+// =========================================================
+// 🔥 تم التعديل: مسار إنشاء الطلب (مع نظام الحماية من الـ Spam)
+// =========================================================
+app.post('/api/submit-order', async (req, res) => {
+    try {
+        const { accountKey, name, phone, bank, image, deviceInfo, orderId } = req.body;
+        if(!accountKey || !name || !phone || !bank || !orderId) {
+            return res.status(400).json({ success: false, message: "بيانات ناقصة" });
+        }
+
+        const requestsSnap = await db.ref('Requests').once('value');
+        let pendingCount = 0;
+        let isSpam = false;
+
+        if (requestsSnap.exists()) {
+            const requests = requestsSnap.val();
+            for (let key in requests) {
+                const reqData = requests[key];
+                if (reqData.status === 'pending') {
+                    pendingCount++;
+                    // فحص الـ Spam: نفس الهاتف ونفس المعرّف ونفس البنك والطلب قيد الانتظار!
+                    if (reqData.phone === phone && reqData.account_key === accountKey && reqData.bank === bank) {
+                        isSpam = true;
+                    }
+                }
+            }
+        }
+
+        if (isSpam) {
+            return res.json({ success: false, message: "تم إنشاء طلبك بالفعل! المرجو الانتظار." });
+        }
+
+        const newOrder = {
+            order_id: orderId,
+            account_key: accountKey,
+            name: name,
+            phone: phone,
+            bank: bank,
+            image: image || "",
+            device_info: deviceInfo || "Unknown Device",
+            status: "pending",
+            timestamp: admin.database.ServerValue.TIMESTAMP
+        };
+
+        await db.ref(`Requests/${orderId}`).set(newOrder);
+
+        res.json({ success: true, position: pendingCount + 1 });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
 app.listen(process.env.PORT || 8080, '0.0.0.0', () => console.log(`🚀 Server running!`));
+
