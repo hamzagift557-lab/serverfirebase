@@ -21,7 +21,6 @@ const generateSecureKey = () => {
     return result;
 };
 
-// دالة لتنسيق التاريخ بالشكل المطلوب
 const getFormattedDate = () => {
     const d = new Date();
     const pad = (n) => String(n).padStart(2, '0');
@@ -42,20 +41,30 @@ try {
             if (!snapshot.exists()) db.ref('keys').set(initialKeys);
         });
 
+        // 🔥 التعديل: السكربت يمر مرة واحدة لإنشاء key وإضافة push = true لجميع الحسابات في acc و sellers_data
         db.ref('acc').once('value', async (snap) => {
             if (snap.exists()) {
                 const accs = snap.val();
                 let updates = {};
                 for (let id in accs) {
-                    if (id !== "bot_menu" && !accs[id].key) {
-                        updates[`acc/${id}/key`] = id;
-                        if (accs[id].seller) {
-                            updates[`sellers_data/${accs[id].seller}/${id}/key`] = id;
+                    if (id !== "bot_menu") {
+                        if (!accs[id].key) {
+                            updates[`acc/${id}/key`] = id;
+                            if (accs[id].seller) {
+                                updates[`sellers_data/${accs[id].seller}/${id}/key`] = id;
+                            }
+                        }
+                        if (accs[id].push === undefined) {
+                            updates[`acc/${id}/push`] = true;
+                            if (accs[id].seller) {
+                                updates[`sellers_data/${accs[id].seller}/${id}/push`] = true;
+                            }
                         }
                     }
                 }
                 if (Object.keys(updates).length > 0) {
                     await db.ref().update(updates);
+                    console.log("✅ [System] تم تفعيل خاصية push=true وإنشاء المفاتيح الناقصة للحسابات بنجاح.");
                 }
             }
         });
@@ -160,7 +169,6 @@ app.post('/api/upload-image', upload.single('image'), async (req, res) => {
 
 app.post('/api/save-account', async (req, res) => {
     try {
-        // 🔥 استقبال مفتاح push
         const { id, sellerKey, title, desc, email, password, bankPrice, webPrice, price_bot, isGg, isGameCenter, imgUrl, img, img2, img3, limit, push } = req.body;
         if (!sellerKey || !title) return res.status(400).json({ success: false, message: "بيانات ناقصة" });
 
@@ -178,12 +186,15 @@ app.post('/api/save-account', async (req, res) => {
             gg: isGg || false, game_center: isGameCenter || false, 
             img: primaryImg, img2: img2 || "", img3: img3 || "", limit: limit || "" 
         };
-        // 🔥 إضافة push للبيانات العامة (مجلد acc) فقط
-        if (push !== undefined) publicData.push = push;
+
+        // 🔥 إضافة المفتاح لكلا المجلدين
+        if (push !== undefined) {
+            publicData.push = push;
+        } else if (!id) {
+            publicData.push = true; // الافتراضي للحسابات الجديدة
+        }
 
         const privateData = { ...publicData, email: email || "", password: password || "" };
-        // 🔥 حذف push من مجلد البائع Sellers_data
-        delete privateData.push;
 
         if (id) {
             await db.ref(`acc/${id}`).update(publicData);
@@ -402,7 +413,6 @@ app.post('/api/app/delete-account', async (req, res) => {
 });
 
 app.post('/api/app/edit-account', async (req, res) => {
-    // 🔥 استقبال مفتاح push
     const { sellerKey, accountId, title, desc, webPrice, bankPrice, price_bot, email, password, isGg, isGameCenter, img, img2, img3, limit, push } = req.body;
     if (!sellerKey || !accountId) return res.status(400).send("فشل التعديل: المفتاح السري والمعرف مطلوبان");
 
@@ -430,15 +440,15 @@ app.post('/api/app/edit-account', async (req, res) => {
             if (img2 !== undefined) publicData.img2 = img2;
             if (img3 !== undefined) publicData.img3 = img3;
             if (limit !== undefined) publicData.limit = limit;
-            
-            // 🔥 إضافة push للبيانات العامة فقط
-            if (push !== undefined) publicData.push = push;
+
+            // 🔥 إضافة مفتاح push
+            if (push !== undefined) {
+                publicData.push = push;
+            }
 
             const privateData = { ...publicData };
             if (email !== undefined) privateData.email = email;
             if (password !== undefined) privateData.password = password;
-            // 🔥 حذف push من مجلد البائع
-            delete privateData.push;
 
             const updates = {};
             
@@ -533,9 +543,6 @@ app.post('/api/app/edit-client-info', async (req, res) => {
     }
 });
 
-// =========================================================
-// 🔥 تم التعديل: مسار إنشاء الطلب مع جميع المفاتيح المطلوبة
-// =========================================================
 app.post('/api/submit-order', async (req, res) => {
     try {
         const { accountKey, name, phone, bank, image, deviceInfo, orderId } = req.body;
@@ -564,13 +571,11 @@ app.post('/api/submit-order', async (req, res) => {
             return res.json({ success: false, message: "تم إنشاء طلبك بالفعل! المرجو الانتظار." });
         }
 
-        // سحب تفاصيل الحساب من القاعدة لملء المفاتيح الناقصة
         const accSnap = await db.ref(`acc/${accountKey}`).once('value');
         let accData = {};
         if(accSnap.exists()) {
             accData = accSnap.val();
         } else {
-            // بحث احتياطي في حال تم حذفه من acc
             const sellersSnap = await db.ref('sellers_data').once('value');
             if(sellersSnap.exists()) {
                 const allSellers = sellersSnap.val();
@@ -595,7 +600,6 @@ app.post('/api/submit-order', async (req, res) => {
             device_info: deviceInfo || "Unknown Device",
             status: "pending",
             timestamp: admin.database.ServerValue.TIMESTAMP,
-            // المفاتيح الجديدة المطلوبة:
             date: getFormattedDate(),
             img_acc: accData.img || "",
             price_site: sitePrice,
@@ -613,9 +617,6 @@ app.post('/api/submit-order', async (req, res) => {
     }
 });
 
-// =========================================================
-// 🔥 مسار جديد: جلب محتوى Requests لتطبيق Sketchware
-// =========================================================
 app.post('/api/app/get-requests', async (req, res) => {
     const { sellerKey } = req.body;
     if (!sellerKey) return res.status(400).send("مفتاح البائع مطلوب");
@@ -628,12 +629,10 @@ app.post('/api/app/get-requests', async (req, res) => {
             const reqSnap = await db.ref('Requests').once('value');
             const requests = reqSnap.val() || {};
             
-            // فلترة الطلبات الخاصة بهذا البائع فقط
             const reqArray = Object.keys(requests)
                 .map(k => ({ key: k, ...requests[k] }))
                 .filter(r => r.seller === sellerName);
             
-            // ترتيب من الأحدث للأقدم
             reqArray.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
             
             res.json(reqArray);
