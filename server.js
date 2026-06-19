@@ -21,6 +21,13 @@ const generateSecureKey = () => {
     return result;
 };
 
+// دالة لتنسيق التاريخ بالشكل المطلوب
+const getFormattedDate = () => {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
 try {
     if (process.env.FIREBASE_SERVICE_ACCOUNT) {
         const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -153,7 +160,8 @@ app.post('/api/upload-image', upload.single('image'), async (req, res) => {
 
 app.post('/api/save-account', async (req, res) => {
     try {
-        const { id, sellerKey, title, desc, email, password, bankPrice, webPrice, price_bot, isGg, isGameCenter, imgUrl, img, img2, img3, limit } = req.body;
+        // 🔥 استقبال مفتاح push
+        const { id, sellerKey, title, desc, email, password, bankPrice, webPrice, price_bot, isGg, isGameCenter, imgUrl, img, img2, img3, limit, push } = req.body;
         if (!sellerKey || !title) return res.status(400).json({ success: false, message: "بيانات ناقصة" });
 
         const keysSnap = await db.ref('keys').once('value');
@@ -170,7 +178,12 @@ app.post('/api/save-account', async (req, res) => {
             gg: isGg || false, game_center: isGameCenter || false, 
             img: primaryImg, img2: img2 || "", img3: img3 || "", limit: limit || "" 
         };
+        // 🔥 إضافة push للبيانات العامة (مجلد acc) فقط
+        if (push !== undefined) publicData.push = push;
+
         const privateData = { ...publicData, email: email || "", password: password || "" };
+        // 🔥 حذف push من مجلد البائع Sellers_data
+        delete privateData.push;
 
         if (id) {
             await db.ref(`acc/${id}`).update(publicData);
@@ -389,7 +402,8 @@ app.post('/api/app/delete-account', async (req, res) => {
 });
 
 app.post('/api/app/edit-account', async (req, res) => {
-    const { sellerKey, accountId, title, desc, webPrice, bankPrice, price_bot, email, password, isGg, isGameCenter, img, img2, img3, limit } = req.body;
+    // 🔥 استقبال مفتاح push
+    const { sellerKey, accountId, title, desc, webPrice, bankPrice, price_bot, email, password, isGg, isGameCenter, img, img2, img3, limit, push } = req.body;
     if (!sellerKey || !accountId) return res.status(400).send("فشل التعديل: المفتاح السري والمعرف مطلوبان");
 
     try {
@@ -416,10 +430,15 @@ app.post('/api/app/edit-account', async (req, res) => {
             if (img2 !== undefined) publicData.img2 = img2;
             if (img3 !== undefined) publicData.img3 = img3;
             if (limit !== undefined) publicData.limit = limit;
+            
+            // 🔥 إضافة push للبيانات العامة فقط
+            if (push !== undefined) publicData.push = push;
 
             const privateData = { ...publicData };
             if (email !== undefined) privateData.email = email;
             if (password !== undefined) privateData.password = password;
+            // 🔥 حذف push من مجلد البائع
+            delete privateData.push;
 
             const updates = {};
             
@@ -515,7 +534,7 @@ app.post('/api/app/edit-client-info', async (req, res) => {
 });
 
 // =========================================================
-// 🔥 تم التعديل: مسار إنشاء الطلب (مع نظام الحماية من الـ Spam)
+// 🔥 تم التعديل: مسار إنشاء الطلب مع جميع المفاتيح المطلوبة
 // =========================================================
 app.post('/api/submit-order', async (req, res) => {
     try {
@@ -534,7 +553,6 @@ app.post('/api/submit-order', async (req, res) => {
                 const reqData = requests[key];
                 if (reqData.status === 'pending') {
                     pendingCount++;
-                    // فحص الـ Spam: نفس الهاتف ونفس المعرّف ونفس البنك والطلب قيد الانتظار!
                     if (reqData.phone === phone && reqData.account_key === accountKey && reqData.bank === bank) {
                         isSpam = true;
                     }
@@ -546,6 +564,27 @@ app.post('/api/submit-order', async (req, res) => {
             return res.json({ success: false, message: "تم إنشاء طلبك بالفعل! المرجو الانتظار." });
         }
 
+        // سحب تفاصيل الحساب من القاعدة لملء المفاتيح الناقصة
+        const accSnap = await db.ref(`acc/${accountKey}`).once('value');
+        let accData = {};
+        if(accSnap.exists()) {
+            accData = accSnap.val();
+        } else {
+            // بحث احتياطي في حال تم حذفه من acc
+            const sellersSnap = await db.ref('sellers_data').once('value');
+            if(sellersSnap.exists()) {
+                const allSellers = sellersSnap.val();
+                for(let s in allSellers) {
+                    if(allSellers[s][accountKey]) {
+                        accData = allSellers[s][accountKey];
+                        break;
+                    }
+                }
+            }
+        }
+
+        const sitePrice = accData.price_web ? Math.round(parseFloat(accData.price_web) * 1.05) : 0;
+
         const newOrder = {
             order_id: orderId,
             account_key: accountKey,
@@ -555,7 +594,15 @@ app.post('/api/submit-order', async (req, res) => {
             image: image || "",
             device_info: deviceInfo || "Unknown Device",
             status: "pending",
-            timestamp: admin.database.ServerValue.TIMESTAMP
+            timestamp: admin.database.ServerValue.TIMESTAMP,
+            // المفاتيح الجديدة المطلوبة:
+            date: getFormattedDate(),
+            img_acc: accData.img || "",
+            price_site: sitePrice,
+            title: accData.title || "",
+            seller: accData.seller || "Unknown",
+            gg: accData.gg !== undefined ? accData.gg : false,
+            ios: accData.game_center !== undefined ? accData.game_center : false
         };
 
         await db.ref(`Requests/${orderId}`).set(newOrder);
@@ -566,5 +613,34 @@ app.post('/api/submit-order', async (req, res) => {
     }
 });
 
-app.listen(process.env.PORT || 8080, '0.0.0.0', () => console.log(`🚀 Server running!`));
+// =========================================================
+// 🔥 مسار جديد: جلب محتوى Requests لتطبيق Sketchware
+// =========================================================
+app.post('/api/app/get-requests', async (req, res) => {
+    const { sellerKey } = req.body;
+    if (!sellerKey) return res.status(400).send("مفتاح البائع مطلوب");
+    try {
+        const keysSnap = await db.ref('keys').once('value');
+        const keys = keysSnap.val();
+        let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
 
+        if (sellerName) {
+            const reqSnap = await db.ref('Requests').once('value');
+            const requests = reqSnap.val() || {};
+            
+            // فلترة الطلبات الخاصة بهذا البائع فقط
+            const reqArray = Object.keys(requests)
+                .map(k => ({ key: k, ...requests[k] }))
+                .filter(r => r.seller === sellerName);
+            
+            // ترتيب من الأحدث للأقدم
+            reqArray.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+            
+            res.json(reqArray);
+        } else {
+            res.status(401).send("غير مصرح لك");
+        }
+    } catch (error) { res.status(500).send(`خطأ: ${error.message}`); }
+});
+
+app.listen(process.env.PORT || 8080, '0.0.0.0', () => console.log(`🚀 Server running!`));
