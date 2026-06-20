@@ -125,6 +125,34 @@ async function sendUpdatedActiveAccounts(res, sellerName) {
     });
 }
 
+// =========================================================
+// 🔥 دالة مساعدة لجلب طلبات الزبائن وتصفيتها حسب الـ pending والتاريخ
+// =========================================================
+async function getUpdatedRequestsArray(sellerName) {
+    const reqSnap = await db.ref('Requests').once('value');
+    const requests = reqSnap.val() || {};
+    
+    const reqArray = Object.keys(requests)
+        .map(k => ({ key: k, ...requests[k] }))
+        .filter(r => r.seller === sellerName);
+    
+    // الترتيب: الـ pending أولاً، ثم حسب التاريخ من الأحدث للأقدم
+    reqArray.sort((a, b) => {
+        const isAPending = a.status === 'pending' ? 1 : 0;
+        const isBPending = b.status === 'pending' ? 1 : 0;
+        
+        // إذا كان أحدهما pending والآخر لا، نضع الـ pending في الأعلى
+        if (isAPending !== isBPending) {
+            return isBPending - isAPending; 
+        }
+        
+        // إذا كانا نفس الحالة (كلاهما pending أو كلاهما منتهي)، نرتب حسب التاريخ (الأحدث فوق)
+        return (b.timestamp || 0) - (a.timestamp || 0);
+    });
+    
+    return reqArray;
+}
+
 app.post('/api/increment-view', async (req, res) => {
     const { seller, id } = req.body;
     if (!seller || !id) return res.json({ success: false });
@@ -623,25 +651,13 @@ app.post('/api/app/get-requests', async (req, res) => {
         let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
 
         if (sellerName) {
-            const reqSnap = await db.ref('Requests').once('value');
-            const requests = reqSnap.val() || {};
-            
-            const reqArray = Object.keys(requests)
-                .map(k => ({ key: k, ...requests[k] }))
-                .filter(r => r.seller === sellerName);
-            
-            reqArray.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-            
-            res.json(reqArray);
+            const updatedData = await getUpdatedRequestsArray(sellerName);
+            res.json(updatedData);
         } else {
             res.status(401).send("غير مصرح لك");
         }
     } catch (error) { res.status(500).send(`خطأ: ${error.message}`); }
 });
-
-// =========================================================
-// 🔥 مسارات جديدة: تعديل وحذف الطلبات (Requests) من التطبيق
-// =========================================================
 
 app.post('/api/app/update-request-status', async (req, res) => {
     const { sellerKey, orderId, status } = req.body;
@@ -659,10 +675,11 @@ app.post('/api/app/update-request-status', async (req, res) => {
             if (reqSnap.exists()) {
                 const reqData = reqSnap.val();
                 
-                // حماية أمنية: البائع يعدل فقط طلباته
                 if (reqData.seller === sellerName) {
                     await reqRef.update({ status: status });
-                    res.json({ success: true, message: "تم تحديث حالة الطلب بنجاح" });
+                    // 🔥 التعديل هنا: جلب وإرسال القائمة المحدثة بالكامل
+                    const updatedData = await getUpdatedRequestsArray(sellerName);
+                    res.json(updatedData);
                 } else {
                     res.status(403).json({ success: false, message: "هذا الطلب لا يخصك" });
                 }
@@ -693,10 +710,11 @@ app.post('/api/app/delete-request', async (req, res) => {
             if (reqSnap.exists()) {
                 const reqData = reqSnap.val();
                 
-                // حماية أمنية: البائع يحذف فقط طلباته
                 if (reqData.seller === sellerName) {
                     await reqRef.remove();
-                    res.json({ success: true, message: "تم حذف الطلب نهائياً" });
+                    // 🔥 التعديل هنا: جلب وإرسال القائمة المحدثة بالكامل بعد الحذف
+                    const updatedData = await getUpdatedRequestsArray(sellerName);
+                    res.json(updatedData);
                 } else {
                     res.status(403).json({ success: false, message: "هذا الطلب لا يخصك" });
                 }
