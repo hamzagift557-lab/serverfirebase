@@ -1,3 +1,4 @@
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -125,9 +126,6 @@ async function sendUpdatedActiveAccounts(res, sellerName) {
     });
 }
 
-// =========================================================
-// 🔥 دالة مساعدة لجلب طلبات الزبائن وتصفيتها حسب الـ pending والتاريخ
-// =========================================================
 async function getUpdatedRequestsArray(sellerName) {
     const reqSnap = await db.ref('Requests').once('value');
     const requests = reqSnap.val() || {};
@@ -136,17 +134,14 @@ async function getUpdatedRequestsArray(sellerName) {
         .map(k => ({ key: k, ...requests[k] }))
         .filter(r => r.seller === sellerName);
     
-    // الترتيب: الـ pending أولاً، ثم حسب التاريخ من الأحدث للأقدم
     reqArray.sort((a, b) => {
         const isAPending = a.status === 'pending' ? 1 : 0;
         const isBPending = b.status === 'pending' ? 1 : 0;
         
-        // إذا كان أحدهما pending والآخر لا، نضع الـ pending في الأعلى
         if (isAPending !== isBPending) {
             return isBPending - isAPending; 
         }
         
-        // إذا كانا نفس الحالة (كلاهما pending أو كلاهما منتهي)، نرتب حسب التاريخ (الأحدث فوق)
         return (b.timestamp || 0) - (a.timestamp || 0);
     });
     
@@ -634,7 +629,15 @@ app.post('/api/submit-order', async (req, res) => {
             ios: accData.game_center !== undefined ? accData.game_center : false
         };
 
-        await db.ref(`Requests/${orderId}`).set(newOrder);
+        // 🔥 الإضافة الجديدة: حفظ الطلب وفي نفس الوقت تسجيل إشعار خفيف في Requests_Triggers
+        await Promise.all([
+            db.ref(`Requests/${orderId}`).set(newOrder),
+            db.ref(`Requests_Triggers/${orderId}`).set({
+                order_id: orderId,
+                price: sitePrice,
+                bank: bank
+            })
+        ]);
 
         res.json({ success: true, position: pendingCount + 1 });
     } catch (error) {
@@ -677,7 +680,6 @@ app.post('/api/app/update-request-status', async (req, res) => {
                 
                 if (reqData.seller === sellerName) {
                     await reqRef.update({ status: status });
-                    // 🔥 التعديل هنا: جلب وإرسال القائمة المحدثة بالكامل
                     const updatedData = await getUpdatedRequestsArray(sellerName);
                     res.json(updatedData);
                 } else {
@@ -712,7 +714,6 @@ app.post('/api/app/delete-request', async (req, res) => {
                 
                 if (reqData.seller === sellerName) {
                     await reqRef.remove();
-                    // 🔥 التعديل هنا: جلب وإرسال القائمة المحدثة بالكامل بعد الحذف
                     const updatedData = await getUpdatedRequestsArray(sellerName);
                     res.json(updatedData);
                 } else {
