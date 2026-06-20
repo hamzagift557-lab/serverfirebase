@@ -41,7 +41,6 @@ try {
             if (!snapshot.exists()) db.ref('keys').set(initialKeys);
         });
 
-        // 🔥 التعديل: السكربت يمر مرة واحدة لإنشاء key وإضافة push = true لجميع الحسابات في acc و sellers_data
         db.ref('acc').once('value', async (snap) => {
             if (snap.exists()) {
                 const accs = snap.val();
@@ -187,11 +186,10 @@ app.post('/api/save-account', async (req, res) => {
             img: primaryImg, img2: img2 || "", img3: img3 || "", limit: limit || "" 
         };
 
-        // 🔥 إضافة المفتاح لكلا المجلدين
         if (push !== undefined) {
             publicData.push = push;
         } else if (!id) {
-            publicData.push = true; // الافتراضي للحسابات الجديدة
+            publicData.push = true; 
         }
 
         const privateData = { ...publicData, email: email || "", password: password || "" };
@@ -440,8 +438,7 @@ app.post('/api/app/edit-account', async (req, res) => {
             if (img2 !== undefined) publicData.img2 = img2;
             if (img3 !== undefined) publicData.img3 = img3;
             if (limit !== undefined) publicData.limit = limit;
-
-            // 🔥 إضافة مفتاح push
+            
             if (push !== undefined) {
                 publicData.push = push;
             }
@@ -640,6 +637,78 @@ app.post('/api/app/get-requests', async (req, res) => {
             res.status(401).send("غير مصرح لك");
         }
     } catch (error) { res.status(500).send(`خطأ: ${error.message}`); }
+});
+
+// =========================================================
+// 🔥 مسارات جديدة: تعديل وحذف الطلبات (Requests) من التطبيق
+// =========================================================
+
+app.post('/api/app/update-request-status', async (req, res) => {
+    const { sellerKey, orderId, status } = req.body;
+    if (!sellerKey || !orderId || !status) return res.status(400).json({ success: false, message: "بيانات ناقصة" });
+
+    try {
+        const keysSnap = await db.ref('keys').once('value');
+        const keys = keysSnap.val();
+        let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
+
+        if (sellerName) {
+            const reqRef = db.ref(`Requests/${orderId}`);
+            const reqSnap = await reqRef.once('value');
+            
+            if (reqSnap.exists()) {
+                const reqData = reqSnap.val();
+                
+                // حماية أمنية: البائع يعدل فقط طلباته
+                if (reqData.seller === sellerName) {
+                    await reqRef.update({ status: status });
+                    res.json({ success: true, message: "تم تحديث حالة الطلب بنجاح" });
+                } else {
+                    res.status(403).json({ success: false, message: "هذا الطلب لا يخصك" });
+                }
+            } else {
+                res.status(404).json({ success: false, message: "الطلب غير موجود" });
+            }
+        } else {
+            res.status(401).json({ success: false, message: "غير مصرح لك" });
+        }
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+app.post('/api/app/delete-request', async (req, res) => {
+    const { sellerKey, orderId } = req.body;
+    if (!sellerKey || !orderId) return res.status(400).json({ success: false, message: "بيانات ناقصة" });
+
+    try {
+        const keysSnap = await db.ref('keys').once('value');
+        const keys = keysSnap.val();
+        let sellerName = Object.keys(keys || {}).find(name => keys[name] === sellerKey);
+
+        if (sellerName) {
+            const reqRef = db.ref(`Requests/${orderId}`);
+            const reqSnap = await reqRef.once('value');
+            
+            if (reqSnap.exists()) {
+                const reqData = reqSnap.val();
+                
+                // حماية أمنية: البائع يحذف فقط طلباته
+                if (reqData.seller === sellerName) {
+                    await reqRef.remove();
+                    res.json({ success: true, message: "تم حذف الطلب نهائياً" });
+                } else {
+                    res.status(403).json({ success: false, message: "هذا الطلب لا يخصك" });
+                }
+            } else {
+                res.status(404).json({ success: false, message: "الطلب غير موجود" });
+            }
+        } else {
+            res.status(401).json({ success: false, message: "غير مصرح لك" });
+        }
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
 });
 
 app.listen(process.env.PORT || 8080, '0.0.0.0', () => console.log(`🚀 Server running!`));
