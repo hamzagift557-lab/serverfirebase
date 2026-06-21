@@ -4,11 +4,10 @@ const cors = require('cors');
 const admin = require('firebase-admin');
 const multer = require('multer');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-const axios = require('axios'); // 🔥 تمت إضافة axios للاتصال بـ API الواتساب
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '50mb' })); // زيادة الليميت من أجل Base64
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 let db = null;
@@ -564,9 +563,7 @@ app.post('/api/app/edit-client-info', async (req, res) => {
     }
 });
 
-// =========================================================
-// 🔥 تم التعديل: إنشاء الطلب وإرسال إشعار عبر الواتساب للآدمن
-// =========================================================
+// 🔥 تعديل الواتساب في دالة الإنشاء باستخدام fetch الأصلية
 app.post('/api/submit-order', async (req, res) => {
     try {
         const { accountKey, name, phone, bank, image, deviceInfo, orderId } = req.body;
@@ -633,19 +630,19 @@ app.post('/api/submit-order', async (req, res) => {
             ios: accData.game_center !== undefined ? accData.game_center : false
         };
 
-        // 1. حفظ الطلب في قاعدة البيانات
         await db.ref(`Requests/${orderId}`).set(newOrder);
 
-        // 2. إرسال إشعار الواتساب في الخلفية بدون تأخير العميل
+        // 🔥 إرسال الإشعار عبر الواتساب في الخلفية بدلاً من Requests_Triggers
         setTimeout(async () => {
             try {
-                const adminPhone = "212708011007"; // رقم الآدمن
+                const adminPhone = "212708011007"; 
                 
                 const getBase64 = async (url) => {
                     if (!url) return null;
                     try {
-                        const resData = await axios.get(url, { responseType: 'arraybuffer' });
-                        return Buffer.from(resData.data, 'binary').toString('base64');
+                        const response = await fetch(url);
+                        const arrayBuffer = await response.arrayBuffer();
+                        return Buffer.from(arrayBuffer).toString('base64');
                     } catch (e) {
                         return null;
                     }
@@ -661,43 +658,52 @@ app.post('/api/submit-order', async (req, res) => {
                     `🔑 المعرف: ${accountKey}\n` +
                     `🕒 الوقت: ${newOrder.date}`;
 
-                // محاولة إرسال صورة الحساب أولاً
                 if (accData.img) {
                     const accImgBase64 = await getBase64(accData.img);
                     if (accImgBase64) {
-                        await axios.post('https://doomn.fly.dev/api/send', {
-                            phone: adminPhone,
-                            type: "image",
-                            base64Data: accImgBase64,
-                            caption: "📸 صورة الحساب المطلوب"
+                        await fetch('https://doomn.fly.dev/api/send', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                phone: adminPhone,
+                                type: "image",
+                                base64Data: accImgBase64,
+                                caption: "📸 صورة الحساب المطلوب"
+                            })
                         });
                     }
                 }
 
-                // محاولة إرسال صورة إثبات الدفع (الروسي) إن وجدت
                 if (image) {
                     const receiptBase64 = await getBase64(image);
                     if (receiptBase64) {
-                        await axios.post('https://doomn.fly.dev/api/send', {
-                            phone: adminPhone,
-                            type: "image",
-                            base64Data: receiptBase64,
-                            caption: "🧾 صورة الإثبات المرفقة"
+                        await fetch('https://doomn.fly.dev/api/send', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                phone: adminPhone,
+                                type: "image",
+                                base64Data: receiptBase64,
+                                caption: "🧾 صورة الإثبات المرفقة"
+                            })
                         });
                     }
                 }
 
-                // إرسال رسالة نصية بكل التفاصيل في النهاية
-                await axios.post('https://doomn.fly.dev/api/send', {
-                    phone: adminPhone,
-                    type: "text",
-                    content: orderDetailsText
+                await fetch('https://doomn.fly.dev/api/send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        phone: adminPhone,
+                        type: "text",
+                        content: orderDetailsText
+                    })
                 });
 
             } catch (err) {
                 console.error("❌ فشل إرسال إشعار الواتساب:", err.message);
             }
-        }, 100); // 100ms تأخير بسيط لتجنب توقف استجابة الـ API السريعة للموقع
+        }, 100);
 
         res.json({ success: true, position: pendingCount + 1 });
     } catch (error) {
