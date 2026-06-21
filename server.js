@@ -7,8 +7,7 @@ const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json());
 
 let db = null;
 let s3Client = null;
@@ -22,8 +21,16 @@ const generateSecureKey = () => {
     return result;
 };
 
-const getFormattedDate = () => {
+// 🔥 دالة لضبط الوقت بزيادة ساعة واحدة لتطبيقه على كامل السيرفر
+const getCurrentLocalTime = () => {
     const d = new Date();
+    d.setHours(d.getHours() + 1);
+    return d;
+};
+
+// دالة لتنسيق التاريخ بالشكل المطلوب باستخدام الوقت المعدل
+const getFormattedDate = () => {
+    const d = getCurrentLocalTime();
     const pad = (n) => String(n).padStart(2, '0');
     return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
@@ -221,7 +228,7 @@ app.post('/api/save-account', async (req, res) => {
             await db.ref(`acc/${id}`).update(publicData);
             await db.ref(`sellers_data/${sellerName}/${id}`).update(privateData);
         } else {
-            const today = new Date();
+            const today = getCurrentLocalTime(); // استخدام الوقت المعدل
             const timestamp = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()}`;
             
             const newId = generateSecureKey();
@@ -263,8 +270,8 @@ app.post('/api/mark-sold', async (req, res) => {
         if (snapshot.exists()) {
             const accData = snapshot.val();
             const finalPrice = sellPrice && String(sellPrice).trim() !== "" ? parseFloat(sellPrice) : parseFloat(accData.price_web);
-            const today = new Date();
-            const sellDate = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()} ${today.getHours()}:${today.getMinutes()}`;
+            const today = getCurrentLocalTime(); // استخدام الوقت المعدل
+            const sellDate = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()} ${String(today.getHours()).padStart(2, '0')}:${String(today.getMinutes()).padStart(2, '0')}`;
             
             const soldData = { ...accData, status: 'sold', sell_date: sellDate, final_sell_price: finalPrice };
             
@@ -390,8 +397,8 @@ app.post('/api/app/set-account-sold', async (req, res) => {
             if (snapshot.exists()) {
                 const accData = snapshot.val();
                 const finalPrice = sellPrice && String(sellPrice).trim() !== "" ? parseFloat(sellPrice) : parseFloat(accData.price_web);
-                const today = new Date();
-                const sellDate = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()} ${today.getHours()}:${today.getMinutes()}`;
+                const today = getCurrentLocalTime(); // استخدام الوقت المعدل
+                const sellDate = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()} ${String(today.getHours()).padStart(2, '0')}:${String(today.getMinutes()).padStart(2, '0')}`;
                 
                 const soldData = { ...accData, status: 'sold', sell_date: sellDate, final_sell_price: finalPrice };
                 if (price_bot !== undefined) {
@@ -563,7 +570,7 @@ app.post('/api/app/edit-client-info', async (req, res) => {
     }
 });
 
-// 🔥 تعديل الواتساب في دالة الإنشاء باستخدام fetch الأصلية
+// 🔥 مسار إنشاء الطلب (محدث برسالة الواتساب)
 app.post('/api/submit-order', async (req, res) => {
     try {
         const { accountKey, name, phone, bank, image, deviceInfo, orderId } = req.body;
@@ -632,7 +639,6 @@ app.post('/api/submit-order', async (req, res) => {
 
         await db.ref(`Requests/${orderId}`).set(newOrder);
 
-        // 🔥 إرسال الإشعار عبر الواتساب في الخلفية بدلاً من Requests_Triggers
         setTimeout(async () => {
             try {
                 const adminPhone = "212708011007"; 
@@ -648,10 +654,13 @@ app.post('/api/submit-order', async (req, res) => {
                     }
                 };
 
+                // 🔥 الرسالة الآن تتضمن اسم البائع وترتيب الزبون
                 const orderDetailsText = `🛍️ *طلب جديد من المتجر!*\n\n` +
                     `🔖 المرجع: ${orderId}\n` +
                     `👤 الزبون: ${name}\n` +
                     `📱 الهاتف: ${phone}\n` +
+                    `🏪 البائع: ${accData.seller || "غير معروف"}\n` +
+                    `🔢 ترتيب الزبون: ${pendingCount + 1}\n` +
                     `💳 طريقة الدفع: ${bank}\n` +
                     `💰 المبلغ: ${sitePrice} درهم\n\n` +
                     `🎮 الحساب: ${accData.title || "غير معروف"}\n` +
