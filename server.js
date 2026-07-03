@@ -10,9 +10,8 @@ const crypto = require('crypto');
 
 const app = express();
 
-// 🔴 [الإصلاح الجذري لمشكلة Fly.io]: الثقة في البروكسي لمعرفة IP المستخدم الحقيقي
-// هذا السطر يمنع حظر جميع المستخدمين عندما يتجاوز شخص واحد الحد المسموح
-app.set('trust proxy', 1);
+// 🔴 السماح لـ Express بالثقة في كل طبقات البروكسي
+app.set('trust proxy', true);
 
 const corsOptions = {
     origin: '*',
@@ -22,10 +21,24 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 
-// 🔴 إضافة مسار فحص الصحة (Health Check) لتجنب خطأ "failed to connect to machine" في Fly.io
+// مسار فحص الصحة (Health Check) لتجنب أخطاء Fly.io
 app.get('/', (req, res) => {
     res.status(200).send('Server is up and running!');
 });
+
+// 🔥 الحل الجذري: دالة مخصصة لاستخراج الـ IP الحقيقي للمستخدم بغض النظر عن عدد طبقات البروكسي
+const getClientIp = (req) => {
+    // 1. فحص الهيدر الخاص بـ Fly.io أولاً
+    if (req.headers['fly-client-ip']) {
+        return req.headers['fly-client-ip'];
+    }
+    // 2. فحص الهيدر العالمي (يأخذ أول IP في القائمة وهو دائماً المستخدم الحقيقي)
+    if (req.headers['x-forwarded-for']) {
+        return req.headers['x-forwarded-for'].split(',')[0].trim();
+    }
+    // 3. الخيار الافتراضي
+    return req.ip;
+};
 
 const limitMessage = { success: false, message: "فشل إرسال الطلب، يوجد ضغط على السيرفرات. تفضل بالانتظار قليلاً." };
 
@@ -33,8 +46,9 @@ const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, 
     max: 200, 
     message: limitMessage,
-    standardHeaders: true, // يرسل معلومات الحد في الـ Headers
-    legacyHeaders: false
+    standardHeaders: true, 
+    legacyHeaders: false,
+    keyGenerator: getClientIp // استخدام الدالة المخصصة لتمييز المستخدمين
 });
 app.use('/api/', apiLimiter);
 
@@ -43,7 +57,8 @@ const strictLimiter = rateLimit({
     max: 20, 
     message: limitMessage,
     standardHeaders: true,
-    legacyHeaders: false
+    legacyHeaders: false,
+    keyGenerator: getClientIp // استخدام الدالة المخصصة لتمييز المستخدمين
 });
 
 app.use('/api/login', strictLimiter);
