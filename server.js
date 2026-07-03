@@ -22,6 +22,21 @@ app.get('/', (req, res) => {
     res.status(200).send('Server is up and running!');
 });
 
+// 🔥 دالة الحماية ضد ثغرات XSS (Sanitization)
+// تقوم بتحويل أي أكواد HTML أو Javascript مدخلة إلى نصوص عادية غير ضارة
+const sanitizeText = (str) => {
+    if (typeof str !== 'string') return str;
+    return str.replace(/[&<>'"]/g, 
+        tag => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            "'": '&#39;',
+            '"': '&quot;'
+        }[tag] || tag)
+    );
+};
+
 const getClientIp = (req) => {
     if (req.headers['fly-client-ip']) return req.headers['fly-client-ip'];
     if (req.headers['x-forwarded-for']) return req.headers['x-forwarded-for'].split(',')[0].trim();
@@ -120,12 +135,20 @@ try {
     }
 } catch (error) { console.error("R2 Error:", error.message); }
 
+// حجم الصورة الأقصى 15 ميجابايت مع فلترة الأنواع
 const upload = multer({ 
     storage: multer.memoryStorage(),
-    limits: { fileSize: 5 * 1024 * 1024 } 
+    limits: { fileSize: 15 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/jpg'];
+        if (allowedMimeTypes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('نوع الملف غير مسموح، يرجى رفع صورة فقط.'), false);
+        }
+    }
 });
 
-// 🔥 نظام الكاش وحماية قاعدة البيانات للمفاتيح (توفر تكلفة قراءة Firebase)
 let keysCache = null;
 let lastKeysFetch = 0;
 let keysPromise = null;
@@ -133,7 +156,7 @@ let keysPromise = null;
 async function verifySeller(sellerKey) {
     if (!sellerKey) return null;
     const now = Date.now();
-    if (keysCache && (now - lastKeysFetch < 5 * 60 * 1000)) { // 5 دقائق كاش
+    if (keysCache && (now - lastKeysFetch < 5 * 60 * 1000)) {
         return Object.keys(keysCache).find(name => keysCache[name] === sellerKey);
     }
     if (!keysPromise) {
@@ -151,7 +174,6 @@ async function verifySeller(sellerKey) {
     return Object.keys(keys || {}).find(name => keys[name] === sellerKey);
 }
 
-// 🔥 نظام الكاش لحماية المسار العام من الاستنزاف المالي (Cache Stampede Protection)
 let publicAccountsCache = null;
 let lastPublicFetch = 0;
 let fetchPromise = null;
@@ -159,7 +181,7 @@ let fetchPromise = null;
 app.get('/api/public/accounts', async (req, res) => {
     try {
         const now = Date.now();
-        if (publicAccountsCache && (now - lastPublicFetch < 60000)) { // دقيقة واحدة كاش
+        if (publicAccountsCache && (now - lastPublicFetch < 5 * 60 * 1000)) { 
             return res.json({ success: true, accounts: publicAccountsCache });
         }
         
@@ -221,11 +243,13 @@ async function sendUpdatedActiveAccounts(res, sellerName) {
 }
 
 async function getUpdatedRequestsArray(sellerName) {
-    const reqSnap = await db.ref('Requests').once('value');
+    const reqSnap = await db.ref('Requests')
+        .orderByChild('seller')
+        .equalTo(sellerName)
+        .once('value');
+        
     const requests = reqSnap.val() || {};
-    const reqArray = Object.keys(requests)
-        .map(k => ({ key: k, ...requests[k] }))
-        .filter(r => r.seller === sellerName);
+    const reqArray = Object.keys(requests).map(k => ({ key: k, ...requests[k] }));
     
     reqArray.sort((a, b) => {
         const isAPending = a.status === 'pending' ? 1 : 0;
@@ -262,7 +286,12 @@ app.post('/api/login', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 });
 
-app.post('/api/upload-image', upload.single('image'), async (req, res) => {
+app.post('/api/upload-image', (req, res, next) => {
+    upload.single('image')(req, res, function (err) {
+        if (err) return res.status(400).json({ success: false, message: err.message });
+        next();
+    });
+}, async (req, res) => {
     if (!s3Client) return res.status(500).json({ success: false, message: "Cloudflare R2 غير متصل" });
     const { sellerKey } = req.body; 
     try {
@@ -288,16 +317,21 @@ app.post('/api/save-account', async (req, res) => {
         const primaryImg = img || imgUrl;
         if (!primaryImg) return res.status(400).json({ success: false, message: "صورة أساسية مطلوبة" });
 
+        // تنظيف النصوص من XSS
+        const safeTitle = sanitizeText(title);
+        const safeDesc = sanitizeText(desc || "");
+        const safePriceBot = sanitizeText(price_bot || "");
+        const safeLimit = sanitizeText(limit || "");
+
         const publicData = { 
-            seller: sellerName, title, desc: desc || "", bank_price: bankPrice || 0, price_web: webPrice, price_bot: price_bot || "", 
-            gg: isGg || false, game_center: isGameCenter || false, img: primaryImg, img2: img2 || "", img3: img3 || "", limit: limit || "" 
+            seller: sellerName, title: safeTitle, desc: safeDesc, bank_price: bankPrice || 0, price_web: webPrice, price_bot: safePriceBot, 
+            gg: isGg || false, game_center: isGameCenter || false, img: primaryImg, img2: img2 || "", img3: img3 || "", limit: safeLimit 
         };
         if (push !== undefined) publicData.push = push; else if (!id) publicData.push = true; 
 
         const privateData = { ...publicData, email: email || "", password: password || "" };
 
         if (id) {
-            // التحقق من الملكية قبل التعديل
             const ownershipSnap = await db.ref(`sellers_data/${sellerName}/${id}`).once('value');
             if (!ownershipSnap.exists()) return res.status(403).json({ success: false, message: "هذا الحساب لا يخصك" });
 
@@ -326,7 +360,6 @@ app.post('/api/update-status', async (req, res) => {
         const validSeller = await verifySeller(sellerKey);
         if (!validSeller || validSeller !== sellerName) return res.status(401).json({ success: false, message: "غير مصرح لك بتعديل هذا الحساب" });
 
-        // التحقق من أن الحساب يخص البائع
         const ownershipSnap = await db.ref(`sellers_data/${sellerName}/${id}`).once('value');
         if (!ownershipSnap.exists()) return res.status(403).json({ success: false, message: "هذا الحساب لا يخصك" });
 
@@ -347,20 +380,22 @@ app.post('/api/mark-sold', async (req, res) => {
         const accRef = db.ref(`sellers_data/${sellerName}/${id}`);
         const snapshot = await accRef.once('value');
 
-        if (snapshot.exists()) { // هذا الجزء يقوم بالتحقق من الملكية تلقائياً
+        if (snapshot.exists()) {
             const accData = snapshot.val();
             const finalPrice = sellPrice && String(sellPrice).trim() !== "" ? parseFloat(sellPrice) : parseFloat(accData.price_web);
             const today = getCurrentLocalTime(); 
             const sellDate = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()} ${String(today.getHours()).padStart(2, '0')}:${String(today.getMinutes()).padStart(2, '0')}`;
             
             const soldData = { ...accData, status: 'sold', sell_date: sellDate, final_sell_price: finalPrice };
-            if (price_bot !== undefined) soldData.price_bot = price_bot;
+            
+            const safePriceBot = sanitizeText(price_bot || "");
+            if (price_bot !== undefined) soldData.price_bot = safePriceBot;
 
             const updates = {};
             updates[`acc/${id}`] = null; 
             updates[`sellers_data/${sellerName}/${id}/status`] = 'sold';
             updates[`sellers_data_sold/${sellerName}/${id}`] = soldData;
-            if (price_bot !== undefined) updates[`sellers_data/${sellerName}/${id}/price_bot`] = price_bot;
+            if (price_bot !== undefined) updates[`sellers_data/${sellerName}/${id}/price_bot`] = safePriceBot;
 
             await db.ref().update(updates);
             res.json({ success: true });
@@ -433,7 +468,6 @@ app.post('/api/app/set-account-status', async (req, res) => {
     try {
         const sellerName = await verifySeller(sellerKey);
         if (sellerName) {
-            // التحقق من الملكية
             const ownershipSnap = await db.ref(`sellers_data/${sellerName}/${accountId}`).once('value');
             if (!ownershipSnap.exists()) return res.status(403).send("هذا الحساب لا يخصك");
 
@@ -463,14 +497,15 @@ app.post('/api/app/set-account-sold', async (req, res) => {
                 const sellDate = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()} ${String(today.getHours()).padStart(2, '0')}:${String(today.getMinutes()).padStart(2, '0')}`;
                 
                 const soldData = { ...accData, status: 'sold', sell_date: sellDate, final_sell_price: finalPrice };
-                if (price_bot !== undefined) soldData.price_bot = price_bot;
+                const safePriceBot = sanitizeText(price_bot || "");
+                if (price_bot !== undefined) soldData.price_bot = safePriceBot;
 
                 const updates = {};
                 updates[`acc/${accountId}`] = null;
                 updates[`sellers_data/${sellerName}/${accountId}/status`] = 'sold';
                 updates[`sellers_data_sold/${sellerName}/${accountId}`] = soldData;
                 
-                if (price_bot !== undefined) updates[`sellers_data/${sellerName}/${accountId}/price_bot`] = price_bot;
+                if (price_bot !== undefined) updates[`sellers_data/${sellerName}/${accountId}/price_bot`] = safePriceBot;
 
                 await db.ref().update(updates);
                 await sendUpdatedActiveAccounts(res, sellerName);
@@ -485,7 +520,6 @@ app.post('/api/app/delete-account', async (req, res) => {
     try {
         const sellerName = await verifySeller(sellerKey);
         if (sellerName) {
-            // التحقق من الملكية
             const ownershipSnap = await db.ref(`sellers_data/${sellerName}/${accountId}`).once('value');
             if (!ownershipSnap.exists()) return res.status(403).send("هذا الحساب لا يخصك");
 
@@ -512,15 +546,24 @@ app.post('/api/app/edit-account', async (req, res) => {
             
             const existingData = checkSnap.val();
             const publicData = {};
-            if (title !== undefined) publicData.title = title; if (desc !== undefined) publicData.desc = desc;
-            if (bankPrice !== undefined) publicData.bank_price = bankPrice; if (webPrice !== undefined) publicData.price_web = webPrice;
-            if (price_bot !== undefined) publicData.price_bot = price_bot; if (isGg !== undefined) publicData.gg = isGg;
-            if (isGameCenter !== undefined) publicData.game_center = isGameCenter; if (img !== undefined) publicData.img = img;
-            if (img2 !== undefined) publicData.img2 = img2; if (img3 !== undefined) publicData.img3 = img3;
-            if (limit !== undefined) publicData.limit = limit; if (push !== undefined) publicData.push = push;
+            
+            // تنظيف البيانات
+            if (title !== undefined) publicData.title = sanitizeText(title); 
+            if (desc !== undefined) publicData.desc = sanitizeText(desc);
+            if (bankPrice !== undefined) publicData.bank_price = bankPrice; 
+            if (webPrice !== undefined) publicData.price_web = webPrice;
+            if (price_bot !== undefined) publicData.price_bot = sanitizeText(price_bot); 
+            if (isGg !== undefined) publicData.gg = isGg;
+            if (isGameCenter !== undefined) publicData.game_center = isGameCenter; 
+            if (img !== undefined) publicData.img = img;
+            if (img2 !== undefined) publicData.img2 = img2; 
+            if (img3 !== undefined) publicData.img3 = img3;
+            if (limit !== undefined) publicData.limit = sanitizeText(limit); 
+            if (push !== undefined) publicData.push = push;
 
             const privateData = { ...publicData };
-            if (email !== undefined) privateData.email = email; if (password !== undefined) privateData.password = password;
+            if (email !== undefined) privateData.email = email; 
+            if (password !== undefined) privateData.password = password;
 
             const updates = {};
             if (existingData.status === 'available') {
@@ -555,7 +598,11 @@ app.post('/api/app/save-client-info', async (req, res) => {
     try {
         const sellerName = await verifySeller(sellerKey);
         if (sellerName) {
-            const dataToSave = { email: email || "", link: link || "", json: json || "" };
+            const dataToSave = { 
+                email: sanitizeText(email || ""), 
+                link: sanitizeText(link || ""), 
+                json: sanitizeText(json || "") 
+            };
             await db.ref(`information de clien/${sellerName}`).set(dataToSave);
             res.json({ success: true, message: "تم نشر المعلومات بنجاح" });
         } else { res.status(401).send("غير مصرح"); }
@@ -569,29 +616,39 @@ app.post('/api/app/edit-client-info', async (req, res) => {
         const sellerName = await verifySeller(sellerKey);
         if (sellerName) {
             const updates = {};
-            if (email !== undefined) updates.email = email; if (link !== undefined) updates.link = link; if (json !== undefined) updates.json = json;
+            if (email !== undefined) updates.email = sanitizeText(email); 
+            if (link !== undefined) updates.link = sanitizeText(link); 
+            if (json !== undefined) updates.json = sanitizeText(json);
+            
             await db.ref(`information de clien/${sellerName}`).update(updates);
             res.json({ success: true, message: "تم تعديل المعلومات بنجاح" });
         } else { res.status(401).send("غير مصرح"); }
     } catch (error) { res.status(500).send(`خطأ: ${error.message}`); }
 });
 
-// 🔥 تعديل لحماية Firebase من الاستنزاف إذا كان الحساب غير موجود
 app.post('/api/submit-order', async (req, res) => {
     try {
         const { accountKey, name, phone, bank, image, deviceInfo, orderId } = req.body;
         if(!accountKey || !name || !phone || !bank || !orderId) return res.status(400).json({ success: false, message: "بيانات ناقصة" });
 
-        const requestsSnap = await db.ref('Requests').once('value');
-        let pendingCount = 0; let isSpam = false;
+        // تنظيف البيانات
+        const safeName = sanitizeText(name);
+        const safePhone = sanitizeText(phone);
+        const safeBank = sanitizeText(bank);
+        const safeDeviceInfo = sanitizeText(deviceInfo || "Unknown Device");
 
-        if (requestsSnap.exists()) {
-            const requests = requestsSnap.val();
+        const pendingRequestsSnap = await db.ref('Requests').orderByChild('status').equalTo('pending').once('value');
+        let pendingCount = 0; 
+        let isSpam = false;
+
+        if (pendingRequestsSnap.exists()) {
+            const requests = pendingRequestsSnap.val();
+            pendingCount = Object.keys(requests).length;
             for (let key in requests) {
                 const reqData = requests[key];
-                if (reqData.status === 'pending') {
-                    pendingCount++;
-                    if (reqData.phone === phone && reqData.account_key === accountKey && reqData.bank === bank) isSpam = true;
+                if (reqData.phone === safePhone && reqData.account_key === accountKey && reqData.bank === safeBank) {
+                    isSpam = true;
+                    break;
                 }
             }
         }
@@ -605,8 +662,8 @@ app.post('/api/submit-order', async (req, res) => {
 
         const sitePrice = accData.price_web ? Math.round(parseFloat(accData.price_web) * 1.05) : 0;
         const newOrder = {
-            order_id: orderId, account_key: accountKey, name: name, phone: phone, bank: bank, image: image || "",
-            device_info: deviceInfo || "Unknown Device", status: "pending", timestamp: admin.database.ServerValue.TIMESTAMP,
+            order_id: orderId, account_key: accountKey, name: safeName, phone: safePhone, bank: safeBank, image: image || "",
+            device_info: safeDeviceInfo, status: "pending", timestamp: admin.database.ServerValue.TIMESTAMP,
             date: getFormattedDate(), img_acc: accData.img || "", price_site: sitePrice, title: accData.title || "",
             seller: accData.seller || "Unknown", gg: accData.gg !== undefined ? accData.gg : false, ios: accData.game_center !== undefined ? accData.game_center : false
         };
@@ -624,7 +681,7 @@ app.post('/api/submit-order', async (req, res) => {
                     } catch (e) { return null; }
                 };
 
-                const orderDetailsText = `🛍️ *طلب جديد من المتجر!*\n\n🔖 المرجع: ${orderId}\n👤 الزبون: ${name}\n📱 الهاتف: ${phone}\n🏪 البائع: ${accData.seller || "غير معروف"}\n🔢 ترتيب الزبون: ${pendingCount + 1}\n💳 طريقة الدفع: ${bank}\n💰 المبلغ: ${sitePrice} درهم\n\n🎮 الحساب: ${accData.title || "غير معروف"}\n🔑 المعرف: ${accountKey}\n🕒 الوقت: ${newOrder.date}`;
+                const orderDetailsText = `🛍️ *طلب جديد من المتجر!*\n\n🔖 المرجع: ${orderId}\n👤 الزبون: ${safeName}\n📱 الهاتف: ${safePhone}\n🏪 البائع: ${accData.seller || "غير معروف"}\n🔢 ترتيب الزبون: ${pendingCount + 1}\n💳 طريقة الدفع: ${safeBank}\n💰 المبلغ: ${sitePrice} درهم\n\n🎮 الحساب: ${accData.title || "غير معروف"}\n🔑 المعرف: ${accountKey}\n🕒 الوقت: ${newOrder.date}`;
 
                 if (accData.img) {
                     const accImgBase64 = await getBase64(accData.img);
