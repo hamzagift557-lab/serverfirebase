@@ -9,6 +9,10 @@ const crypto = require('crypto');
 
 const app = express();
 
+// 🔴 [الإصلاح الجذري لمشكلة Fly.io]: الثقة في البروكسي لمعرفة IP المستخدم الحقيقي
+// هذا السطر يمنع حظر جميع المستخدمين عندما يتجاوز شخص واحد الحد المسموح
+app.set('trust proxy', 1);
+
 const corsOptions = {
     origin: '*',
     methods: ['GET', 'POST'],
@@ -17,19 +21,28 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 
-const limitMessage = { success: false, message: "فشل ارسال الطلب يوجد ضغط على سيرفرات تفضل" };
+// 🔴 إضافة مسار فحص الصحة (Health Check) لتجنب خطأ "failed to connect to machine" في Fly.io
+app.get('/', (req, res) => {
+    res.status(200).send('Server is up and running!');
+});
+
+const limitMessage = { success: false, message: "فشل إرسال الطلب، يوجد ضغط على السيرفرات. تفضل بالانتظار قليلاً." };
 
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, 
     max: 200, 
-    message: limitMessage
+    message: limitMessage,
+    standardHeaders: true, // يرسل معلومات الحد في الـ Headers
+    legacyHeaders: false
 });
 app.use('/api/', apiLimiter);
 
 const strictLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, 
     max: 20, 
-    message: limitMessage
+    message: limitMessage,
+    standardHeaders: true,
+    legacyHeaders: false
 });
 
 app.use('/api/login', strictLimiter);
@@ -634,4 +647,7 @@ app.post('/api/app/delete-request', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 });
 
-app.listen(process.env.PORT || 8080, '0.0.0.0', () => console.log(`🚀 Server running!`));
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Server running on port ${PORT}!`);
+});
