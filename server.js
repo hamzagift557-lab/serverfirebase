@@ -1,4 +1,3 @@
-
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -9,8 +8,6 @@ const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
 
 const app = express();
-
-// 🔴 السماح لـ Express بالثقة في كل طبقات البروكسي
 app.set('trust proxy', true);
 
 const corsOptions = {
@@ -21,22 +18,13 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 
-// مسار فحص الصحة (Health Check) لتجنب أخطاء Fly.io
 app.get('/', (req, res) => {
     res.status(200).send('Server is up and running!');
 });
 
-// 🔥 الحل الجذري: دالة مخصصة لاستخراج الـ IP الحقيقي للمستخدم بغض النظر عن عدد طبقات البروكسي
 const getClientIp = (req) => {
-    // 1. فحص الهيدر الخاص بـ Fly.io أولاً
-    if (req.headers['fly-client-ip']) {
-        return req.headers['fly-client-ip'];
-    }
-    // 2. فحص الهيدر العالمي (يأخذ أول IP في القائمة وهو دائماً المستخدم الحقيقي)
-    if (req.headers['x-forwarded-for']) {
-        return req.headers['x-forwarded-for'].split(',')[0].trim();
-    }
-    // 3. الخيار الافتراضي
+    if (req.headers['fly-client-ip']) return req.headers['fly-client-ip'];
+    if (req.headers['x-forwarded-for']) return req.headers['x-forwarded-for'].split(',')[0].trim();
     return req.ip;
 };
 
@@ -48,7 +36,7 @@ const apiLimiter = rateLimit({
     message: limitMessage,
     standardHeaders: true, 
     legacyHeaders: false,
-    keyGenerator: getClientIp // استخدام الدالة المخصصة لتمييز المستخدمين
+    keyGenerator: getClientIp
 });
 app.use('/api/', apiLimiter);
 
@@ -58,7 +46,7 @@ const strictLimiter = rateLimit({
     message: limitMessage,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: getClientIp // استخدام الدالة المخصصة لتمييز المستخدمين
+    keyGenerator: getClientIp
 });
 
 app.use('/api/login', strictLimiter);
@@ -70,9 +58,7 @@ app.use('/api/app/edit-account', strictLimiter);
 let db = null;
 let s3Client = null;
 
-const generateSecureKey = () => {
-    return crypto.randomBytes(25).toString('hex');
-};
+const generateSecureKey = () => crypto.randomBytes(25).toString('hex');
 
 const getCurrentLocalTime = () => {
     const d = new Date();
@@ -96,9 +82,7 @@ try {
         db = admin.database();
         
         db.ref('keys').once('value', snapshot => {
-            if (!snapshot.exists()) {
-                console.warn("⚠️ [Security] لا توجد مفاتيح في قاعدة البيانات.");
-            }
+            if (!snapshot.exists()) console.warn("⚠️ [Security] لا توجد مفاتيح في قاعدة البيانات.");
         });
 
         db.ref('acc').once('value', async (snap) => {
@@ -109,15 +93,11 @@ try {
                     if (id !== "bot_menu") {
                         if (!accs[id].key) {
                             updates[`acc/${id}/key`] = id;
-                            if (accs[id].seller) {
-                                updates[`sellers_data/${accs[id].seller}/${id}/key`] = id;
-                            }
+                            if (accs[id].seller) updates[`sellers_data/${accs[id].seller}/${id}/key`] = id;
                         }
                         if (accs[id].push === undefined) {
                             updates[`acc/${id}/push`] = true;
-                            if (accs[id].seller) {
-                                updates[`sellers_data/${accs[id].seller}/${id}/push`] = true;
-                            }
+                            if (accs[id].seller) updates[`sellers_data/${accs[id].seller}/${id}/push`] = true;
                         }
                     }
                 }
@@ -145,12 +125,66 @@ const upload = multer({
     limits: { fileSize: 5 * 1024 * 1024 } 
 });
 
+// 🔥 نظام الكاش وحماية قاعدة البيانات للمفاتيح (توفر تكلفة قراءة Firebase)
+let keysCache = null;
+let lastKeysFetch = 0;
+let keysPromise = null;
+
 async function verifySeller(sellerKey) {
     if (!sellerKey) return null;
-    const keysSnap = await db.ref('keys').once('value');
-    const keys = keysSnap.val();
+    const now = Date.now();
+    if (keysCache && (now - lastKeysFetch < 5 * 60 * 1000)) { // 5 دقائق كاش
+        return Object.keys(keysCache).find(name => keysCache[name] === sellerKey);
+    }
+    if (!keysPromise) {
+        keysPromise = db.ref('keys').once('value').then(snap => {
+            keysCache = snap.val() || {};
+            lastKeysFetch = Date.now();
+            keysPromise = null;
+            return keysCache;
+        }).catch(() => {
+            keysPromise = null;
+            return keysCache || {};
+        });
+    }
+    const keys = await keysPromise || keysCache;
     return Object.keys(keys || {}).find(name => keys[name] === sellerKey);
 }
+
+// 🔥 نظام الكاش لحماية المسار العام من الاستنزاف المالي (Cache Stampede Protection)
+let publicAccountsCache = null;
+let lastPublicFetch = 0;
+let fetchPromise = null;
+
+app.get('/api/public/accounts', async (req, res) => {
+    try {
+        const now = Date.now();
+        if (publicAccountsCache && (now - lastPublicFetch < 60000)) { // دقيقة واحدة كاش
+            return res.json({ success: true, accounts: publicAccountsCache });
+        }
+        
+        if (!fetchPromise) {
+            fetchPromise = db.ref('acc').once('value').then(snapshot => {
+                const data = snapshot.val() || {};
+                publicAccountsCache = Object.keys(data).map(key => ({
+                    key: key,
+                    ...data[key]
+                })).filter(acc => acc.status !== 'delete');
+                lastPublicFetch = Date.now();
+                fetchPromise = null;
+                return publicAccountsCache;
+            }).catch(err => {
+                fetchPromise = null;
+                throw err;
+            });
+        }
+        
+        const accounts = await fetchPromise || publicAccountsCache;
+        res.json({ success: true, accounts });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
 
 async function sendUpdatedActiveAccounts(res, sellerName) {
     const snapshot = await db.ref(`sellers_data/${sellerName}`).once('value');
@@ -201,21 +235,6 @@ async function getUpdatedRequestsArray(sellerName) {
     });
     return reqArray;
 }
-
-app.get('/api/public/accounts', async (req, res) => {
-    try {
-        const snapshot = await db.ref('acc').once('value');
-        const data = snapshot.val() || {};
-        const accountsArray = Object.keys(data).map(key => ({
-            key: key,
-            ...data[key]
-        })).filter(acc => acc.status !== 'delete');
-
-        res.json({ success: true, accounts: accountsArray });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-});
 
 app.post('/api/increment-view', async (req, res) => {
     const { seller, id } = req.body;
@@ -278,6 +297,10 @@ app.post('/api/save-account', async (req, res) => {
         const privateData = { ...publicData, email: email || "", password: password || "" };
 
         if (id) {
+            // التحقق من الملكية قبل التعديل
+            const ownershipSnap = await db.ref(`sellers_data/${sellerName}/${id}`).once('value');
+            if (!ownershipSnap.exists()) return res.status(403).json({ success: false, message: "هذا الحساب لا يخصك" });
+
             await db.ref(`acc/${id}`).update(publicData);
             await db.ref(`sellers_data/${sellerName}/${id}`).update(privateData);
         } else {
@@ -303,6 +326,10 @@ app.post('/api/update-status', async (req, res) => {
         const validSeller = await verifySeller(sellerKey);
         if (!validSeller || validSeller !== sellerName) return res.status(401).json({ success: false, message: "غير مصرح لك بتعديل هذا الحساب" });
 
+        // التحقق من أن الحساب يخص البائع
+        const ownershipSnap = await db.ref(`sellers_data/${sellerName}/${id}`).once('value');
+        if (!ownershipSnap.exists()) return res.status(403).json({ success: false, message: "هذا الحساب لا يخصك" });
+
         const updates = {};
         updates[`acc/${id}/status`] = status;
         updates[`sellers_data/${sellerName}/${id}/status`] = status;
@@ -320,7 +347,7 @@ app.post('/api/mark-sold', async (req, res) => {
         const accRef = db.ref(`sellers_data/${sellerName}/${id}`);
         const snapshot = await accRef.once('value');
 
-        if (snapshot.exists()) {
+        if (snapshot.exists()) { // هذا الجزء يقوم بالتحقق من الملكية تلقائياً
             const accData = snapshot.val();
             const finalPrice = sellPrice && String(sellPrice).trim() !== "" ? parseFloat(sellPrice) : parseFloat(accData.price_web);
             const today = getCurrentLocalTime(); 
@@ -337,7 +364,7 @@ app.post('/api/mark-sold', async (req, res) => {
 
             await db.ref().update(updates);
             res.json({ success: true });
-        } else { res.status(404).json({ success: false, message: "الحساب غير موجود" }); }
+        } else { res.status(404).json({ success: false, message: "الحساب غير موجود أو لا يخصك" }); }
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 });
 
@@ -406,6 +433,10 @@ app.post('/api/app/set-account-status', async (req, res) => {
     try {
         const sellerName = await verifySeller(sellerKey);
         if (sellerName) {
+            // التحقق من الملكية
+            const ownershipSnap = await db.ref(`sellers_data/${sellerName}/${accountId}`).once('value');
+            if (!ownershipSnap.exists()) return res.status(403).send("هذا الحساب لا يخصك");
+
             const updates = {};
             if (status !== 'available') updates[`acc/${accountId}`] = null;
             else updates[`acc/${accountId}/status`] = status;
@@ -443,7 +474,7 @@ app.post('/api/app/set-account-sold', async (req, res) => {
 
                 await db.ref().update(updates);
                 await sendUpdatedActiveAccounts(res, sellerName);
-            } else { res.status(404).send("حساب غير موجود"); }
+            } else { res.status(404).send("حساب غير موجود أو لا يخصك"); }
         } else { res.status(401).send("غير مصرح"); }
     } catch (error) { res.status(500).send(`خطأ: ${error.message}`); }
 });
@@ -454,6 +485,10 @@ app.post('/api/app/delete-account', async (req, res) => {
     try {
         const sellerName = await verifySeller(sellerKey);
         if (sellerName) {
+            // التحقق من الملكية
+            const ownershipSnap = await db.ref(`sellers_data/${sellerName}/${accountId}`).once('value');
+            if (!ownershipSnap.exists()) return res.status(403).send("هذا الحساب لا يخصك");
+
             const updates = {};
             updates[`acc/${accountId}`] = null;
             updates[`sellers_data/${sellerName}/${accountId}/status`] = 'delete';
@@ -473,7 +508,7 @@ app.post('/api/app/edit-account', async (req, res) => {
         if (sellerName) {
             const accRef = db.ref(`sellers_data/${sellerName}/${accountId}`);
             const checkSnap = await accRef.once('value');
-            if (!checkSnap.exists()) return res.status(404).send("الحساب غير موجود");
+            if (!checkSnap.exists()) return res.status(404).send("الحساب غير موجود أو لا يخصك");
             
             const existingData = checkSnap.val();
             const publicData = {};
@@ -541,6 +576,7 @@ app.post('/api/app/edit-client-info', async (req, res) => {
     } catch (error) { res.status(500).send(`خطأ: ${error.message}`); }
 });
 
+// 🔥 تعديل لحماية Firebase من الاستنزاف إذا كان الحساب غير موجود
 app.post('/api/submit-order', async (req, res) => {
     try {
         const { accountKey, name, phone, bank, image, deviceInfo, orderId } = req.body;
@@ -562,18 +598,10 @@ app.post('/api/submit-order', async (req, res) => {
         if (isSpam) return res.json({ success: false, message: "تم إنشاء طلبك بالفعل! المرجو الانتظار." });
 
         const accSnap = await db.ref(`acc/${accountKey}`).once('value');
-        let accData = {};
-        if(accSnap.exists()) {
-            accData = accSnap.val();
-        } else {
-            const sellersSnap = await db.ref('sellers_data').once('value');
-            if(sellersSnap.exists()) {
-                const allSellers = sellersSnap.val();
-                for(let s in allSellers) {
-                    if(allSellers[s][accountKey]) { accData = allSellers[s][accountKey]; break; }
-                }
-            }
+        if(!accSnap.exists()) {
+            return res.status(404).json({ success: false, message: "الحساب غير موجود أو مباع" });
         }
+        const accData = accSnap.val();
 
         const sitePrice = accData.price_web ? Math.round(parseFloat(accData.price_web) * 1.05) : 0;
         const newOrder = {
