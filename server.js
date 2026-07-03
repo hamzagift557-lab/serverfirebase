@@ -1,3 +1,4 @@
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -23,7 +24,6 @@ app.get('/', (req, res) => {
 });
 
 // 🔥 دالة الحماية ضد ثغرات XSS (Sanitization)
-// تقوم بتحويل أي أكواد HTML أو Javascript مدخلة إلى نصوص عادية غير ضارة
 const sanitizeText = (str) => {
     if (typeof str !== 'string') return str;
     return str.replace(/[&<>'"]/g, 
@@ -135,7 +135,6 @@ try {
     }
 } catch (error) { console.error("R2 Error:", error.message); }
 
-// حجم الصورة الأقصى 15 ميجابايت مع فلترة الأنواع
 const upload = multer({ 
     storage: multer.memoryStorage(),
     limits: { fileSize: 15 * 1024 * 1024 },
@@ -156,7 +155,8 @@ let keysPromise = null;
 async function verifySeller(sellerKey) {
     if (!sellerKey) return null;
     const now = Date.now();
-    if (keysCache && (now - lastKeysFetch < 5 * 60 * 1000)) {
+    // 🔥 تم التعديل: دقيقة واحدة بدلاً من 5 دقائق
+    if (keysCache && (now - lastKeysFetch < 1 * 60 * 1000)) {
         return Object.keys(keysCache).find(name => keysCache[name] === sellerKey);
     }
     if (!keysPromise) {
@@ -181,7 +181,8 @@ let fetchPromise = null;
 app.get('/api/public/accounts', async (req, res) => {
     try {
         const now = Date.now();
-        if (publicAccountsCache && (now - lastPublicFetch < 5 * 60 * 1000)) { 
+        // 🔥 تم التعديل: دقيقة واحدة بدلاً من 5 دقائق
+        if (publicAccountsCache && (now - lastPublicFetch < 1 * 60 * 1000)) { 
             return res.json({ success: true, accounts: publicAccountsCache });
         }
         
@@ -317,7 +318,6 @@ app.post('/api/save-account', async (req, res) => {
         const primaryImg = img || imgUrl;
         if (!primaryImg) return res.status(400).json({ success: false, message: "صورة أساسية مطلوبة" });
 
-        // تنظيف النصوص من XSS
         const safeTitle = sanitizeText(title);
         const safeDesc = sanitizeText(desc || "");
         const safePriceBot = sanitizeText(price_bot || "");
@@ -547,7 +547,6 @@ app.post('/api/app/edit-account', async (req, res) => {
             const existingData = checkSnap.val();
             const publicData = {};
             
-            // تنظيف البيانات
             if (title !== undefined) publicData.title = sanitizeText(title); 
             if (desc !== undefined) publicData.desc = sanitizeText(desc);
             if (bankPrice !== undefined) publicData.bank_price = bankPrice; 
@@ -628,14 +627,15 @@ app.post('/api/app/edit-client-info', async (req, res) => {
 
 app.post('/api/submit-order', async (req, res) => {
     try {
-        const { accountKey, name, phone, bank, image, deviceInfo, orderId } = req.body;
+        // 🔥 إضافة code لاستقبال رموز إنوي 
+        const { accountKey, name, phone, bank, image, deviceInfo, orderId, code } = req.body;
         if(!accountKey || !name || !phone || !bank || !orderId) return res.status(400).json({ success: false, message: "بيانات ناقصة" });
 
-        // تنظيف البيانات
         const safeName = sanitizeText(name);
         const safePhone = sanitizeText(phone);
         const safeBank = sanitizeText(bank);
         const safeDeviceInfo = sanitizeText(deviceInfo || "Unknown Device");
+        const safeCode = sanitizeText(code || ""); // 🔥 تنظيف وحفظ كود إنوي
 
         const pendingRequestsSnap = await db.ref('Requests').orderByChild('status').equalTo('pending').once('value');
         let pendingCount = 0; 
@@ -663,6 +663,7 @@ app.post('/api/submit-order', async (req, res) => {
         const sitePrice = accData.price_web ? Math.round(parseFloat(accData.price_web) * 1.05) : 0;
         const newOrder = {
             order_id: orderId, account_key: accountKey, name: safeName, phone: safePhone, bank: safeBank, image: image || "",
+            code: safeCode, // 🔥 حفظ الكود في قاعدة البيانات ضمن تفاصيل الطلب
             device_info: safeDeviceInfo, status: "pending", timestamp: admin.database.ServerValue.TIMESTAMP,
             date: getFormattedDate(), img_acc: accData.img || "", price_site: sitePrice, title: accData.title || "",
             seller: accData.seller || "Unknown", gg: accData.gg !== undefined ? accData.gg : false, ios: accData.game_center !== undefined ? accData.game_center : false
@@ -681,7 +682,14 @@ app.post('/api/submit-order', async (req, res) => {
                     } catch (e) { return null; }
                 };
 
-                const orderDetailsText = `🛍️ *طلب جديد من المتجر!*\n\n🔖 المرجع: ${orderId}\n👤 الزبون: ${safeName}\n📱 الهاتف: ${safePhone}\n🏪 البائع: ${accData.seller || "غير معروف"}\n🔢 ترتيب الزبون: ${pendingCount + 1}\n💳 طريقة الدفع: ${safeBank}\n💰 المبلغ: ${sitePrice} درهم\n\n🎮 الحساب: ${accData.title || "غير معروف"}\n🔑 المعرف: ${accountKey}\n🕒 الوقت: ${newOrder.date}`;
+                // 🔥 تعديل الرسالة لتشمل رموز إنوي في حالة وجودها
+                let orderDetailsText = `🛍️ *طلب جديد من المتجر!*\n\n🔖 المرجع: ${orderId}\n👤 الزبون: ${safeName}\n📱 الهاتف: ${safePhone}\n🏪 البائع: ${accData.seller || "غير معروف"}\n🔢 ترتيب الزبون: ${pendingCount + 1}\n💳 طريقة الدفع: ${safeBank}\n`;
+
+                if (safeCode !== "") {
+                    orderDetailsText += `🎟️ رموز التعبئة: ${safeCode}\n`;
+                }
+
+                orderDetailsText += `💰 المبلغ: ${sitePrice} درهم\n\n🎮 الحساب: ${accData.title || "غير معروف"}\n🔑 المعرف: ${accountKey}\n🕒 الوقت: ${newOrder.date}`;
 
                 if (accData.img) {
                     const accImgBase64 = await getBase64(accData.img);
