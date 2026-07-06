@@ -1,3 +1,4 @@
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -23,23 +24,20 @@ app.get('/', (req, res) => {
     res.status(200).send('Server is up and running!');
 });
 
-// 🔥 دالة الحماية والقص حسب الطول المطلوب
 const sanitizeText = (str, maxLength = 1000) => {
     if (typeof str !== 'string') return "";
     const cleanStr = str.replace(/[&<>'"]/g, 
         tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
     );
-    return cleanStr.substring(0, maxLength); // قص النص
+    return cleanStr.substring(0, maxLength);
 };
 
-// 🔥 استخراج الأرقام فقط (لحذف الحروف مثل dh أو MAD من الأسعار)
 const extractNumber = (val) => {
     if (val === undefined || val === null || String(val).trim() === "") return 0;
-    const numStr = String(val).replace(/[^\d.]/g, ''); // إزالة أي شيء ما عدا الأرقام والنقطة
+    const numStr = String(val).replace(/[^\d.]/g, ''); 
     return numStr === "" ? 0 : parseFloat(numStr);
 };
 
-// لاستخراج الأرقام كنص (مثل price_bot الذي قد يكون فارغاً)
 const extractNumberStr = (val) => {
     if (val === undefined || val === null || String(val).trim() === "") return "";
     const numStr = String(val).replace(/[^\d.]/g, '');
@@ -186,7 +184,6 @@ let publicAccountsCache = null;
 let lastPublicFetch = 0;
 let fetchPromise = null;
 
-// 🔥 تم تعديل وقت تحديث الحسابات للعموم ليصبح كل 10 ثواني بشكل فوري
 app.get('/api/public/accounts', async (req, res) => {
     try {
         const now = Date.now();
@@ -326,9 +323,8 @@ app.post('/api/save-account', async (req, res) => {
         const primaryImg = img || imgUrl;
         if (!primaryImg) return res.status(400).json({ success: false, message: "صورة أساسية مطلوبة" });
 
-        // 🔥 تطبيق الحماية، قص النصوص، وفلترة الأرقام
         const safeTitle = sanitizeText(title, 200);
-        const safeDesc = sanitizeText(desc || "", 500); // 500 حرف كحد أقصى للوصف
+        const safeDesc = sanitizeText(desc || "", 500); 
         const safeLimit = sanitizeText(limit || "", 200);
         
         const safeBankPrice = extractNumber(bankPrice);
@@ -342,7 +338,6 @@ app.post('/api/save-account', async (req, res) => {
         
         if (push !== undefined) publicData.push = push; else if (!id) publicData.push = true; 
 
-        // 200 حرف كحد أقصى للإيميل والباسورد
         const safeEmail = sanitizeText(email || "", 200);
         const safePassword = sanitizeText(password || "", 200);
         const privateData = { ...publicData, email: safeEmail, password: safePassword };
@@ -370,18 +365,33 @@ app.post('/api/save-account', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 });
 
+// 🔥 التعديل الجذري على دالة تعديل الحالة
 app.post('/api/update-status', async (req, res) => {
     const { id, status, sellerName, sellerKey } = req.body;
     try {
         const validSeller = await verifySeller(sellerKey);
         if (!validSeller || validSeller !== sellerName) return res.status(401).json({ success: false, message: "غير مصرح لك بتعديل هذا الحساب" });
 
+        // قراءة مسار الحساب فقط لتوفير الموارد
         const ownershipSnap = await db.ref(`sellers_data/${sellerName}/${id}`).once('value');
         if (!ownershipSnap.exists()) return res.status(403).json({ success: false, message: "هذا الحساب لا يخصك" });
 
+        const accData = ownershipSnap.val();
         const updates = {};
-        updates[`acc/${id}/status`] = status;
+        
         updates[`sellers_data/${sellerName}/${id}/status`] = status;
+
+        if (status !== 'available') {
+            // إذا تغيرت الحالة إلى غير متوفر (مباع، معلق، إلخ)، نحذفه نهائياً من acc
+            updates[`acc/${id}`] = null;
+        } else {
+            // إذا عادت الحالة إلى متوفر، نعيد بناء الحساب بكامل بياناته في acc باستثناء الإيميل والباسورد
+            const publicData = { ...accData, status: 'available' };
+            delete publicData.email;
+            delete publicData.password;
+            updates[`acc/${id}`] = publicData;
+        }
+
         await db.ref().update(updates);
         res.json({ success: true });
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
@@ -398,7 +408,6 @@ app.post('/api/mark-sold', async (req, res) => {
 
         if (snapshot.exists()) {
             const accData = snapshot.val();
-            // استخراج الأرقام فقط من السعر المباع به
             const finalPrice = sellPrice && String(sellPrice).trim() !== "" ? extractNumber(sellPrice) : parseFloat(accData.price_web);
             const today = getCurrentLocalTime(); 
             const sellDate = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()} ${String(today.getHours()).padStart(2, '0')}:${String(today.getMinutes()).padStart(2, '0')}`;
@@ -479,6 +488,7 @@ app.post('/api/app/get-sold-accounts', async (req, res) => {
     } catch (error) { res.status(500).send(`خطأ: ${error.message}`); }
 });
 
+// 🔥 تعديل مماثل لتطبيق الهاتف: بناء الحساب أو إزالته كلياً بناءً على الحالة
 app.post('/api/app/set-account-status', async (req, res) => {
     const { sellerKey, accountId, status } = req.body;
     if (!sellerKey || !accountId || !status) return res.status(400).send("بيانات ناقصة");
@@ -488,11 +498,20 @@ app.post('/api/app/set-account-status', async (req, res) => {
             const ownershipSnap = await db.ref(`sellers_data/${sellerName}/${accountId}`).once('value');
             if (!ownershipSnap.exists()) return res.status(403).send("هذا الحساب لا يخصك");
 
+            const accData = ownershipSnap.val();
             const updates = {};
-            if (status !== 'available') updates[`acc/${accountId}`] = null;
-            else updates[`acc/${accountId}/status`] = status;
             
             updates[`sellers_data/${sellerName}/${accountId}/status`] = status;
+
+            if (status !== 'available') {
+                updates[`acc/${accountId}`] = null;
+            } else {
+                const publicData = { ...accData, status: 'available' };
+                delete publicData.email;
+                delete publicData.password;
+                updates[`acc/${accountId}`] = publicData;
+            }
+            
             await db.ref().update(updates);
             await sendUpdatedActiveAccounts(res, sellerName);
         } else { res.status(401).send("غير مصرح"); }
@@ -531,7 +550,6 @@ app.post('/api/app/set-account-sold', async (req, res) => {
     } catch (error) { res.status(500).send(`خطأ: ${error.message}`); }
 });
 
-// 🔥 تعديل مسار الحذف ليقوم بحذف العقدة (Node) بشكل نهائي من قاعدة البيانات
 app.post('/api/app/delete-account', async (req, res) => {
     const { sellerKey, accountId } = req.body;
     if (!sellerKey || !accountId) return res.status(400).send("بيانات ناقصة");
@@ -542,11 +560,9 @@ app.post('/api/app/delete-account', async (req, res) => {
             if (!ownershipSnap.exists()) return res.status(403).send("هذا الحساب لا يخصك");
 
             const updates = {};
-            // استخدام القيمة null يحذف العنصر كلياً من فايربيز
             updates[`acc/${accountId}`] = null;
             updates[`sellers_data/${sellerName}/${accountId}`] = null;
             updates[`sellers_data_sold/${sellerName}/${accountId}`] = null;
-            
             await db.ref().update(updates);
             await sendUpdatedActiveAccounts(res, sellerName);
         } else { res.status(401).send("غير مصرح"); }
@@ -567,7 +583,6 @@ app.post('/api/app/edit-account', async (req, res) => {
             const existingData = checkSnap.val();
             const publicData = {};
             
-            // 🔥 قص النصوص، وتنظيف الأرقام في التعديل أيضاً
             if (title !== undefined) publicData.title = sanitizeText(title, 200); 
             if (desc !== undefined) publicData.desc = sanitizeText(desc, 500);
             if (bankPrice !== undefined) publicData.bank_price = extractNumber(bankPrice); 
