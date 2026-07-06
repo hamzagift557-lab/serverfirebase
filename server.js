@@ -1,4 +1,3 @@
-
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -18,23 +17,33 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '2mb' })); 
+app.use(express.urlencoded({ limit: '2mb', extended: true }));
 
 app.get('/', (req, res) => {
     res.status(200).send('Server is up and running!');
 });
 
+// 🔥 دالة الحماية والقص حسب الطول المطلوب
 const sanitizeText = (str, maxLength = 1000) => {
     if (typeof str !== 'string') return "";
     const cleanStr = str.replace(/[&<>'"]/g, 
         tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
     );
-    return cleanStr.substring(0, maxLength);
+    return cleanStr.substring(0, maxLength); // قص النص
 };
 
-const sanitizeUrl = (url, maxLength = 1000) => {
-    if (typeof url !== 'string') return "";
-    if (url.toLowerCase().startsWith('javascript:') || url.toLowerCase().startsWith('data:')) return "";
-    return encodeURI(url.replace(/[<>"']/g, "")).substring(0, maxLength);
+// 🔥 استخراج الأرقام فقط (لحذف الحروف مثل dh أو MAD من الأسعار)
+const extractNumber = (val) => {
+    if (val === undefined || val === null || String(val).trim() === "") return 0;
+    const numStr = String(val).replace(/[^\d.]/g, ''); // إزالة أي شيء ما عدا الأرقام والنقطة
+    return numStr === "" ? 0 : parseFloat(numStr);
+};
+
+// لاستخراج الأرقام كنص (مثل price_bot الذي قد يكون فارغاً)
+const extractNumberStr = (val) => {
+    if (val === undefined || val === null || String(val).trim() === "") return "";
+    const numStr = String(val).replace(/[^\d.]/g, '');
+    return numStr;
 };
 
 const getClientIp = (req) => {
@@ -66,9 +75,9 @@ app.use('/api/login', strictLimiter);
 app.use('/api/app/verify-key', strictLimiter);
 app.use('/api/app/delete-account', strictLimiter);
 app.use('/api/app/set-account-status', strictLimiter);
-app.use('/api/app/edit-account', strictLimiter); // ✅ تمت الاستعادة
+app.use('/api/app/edit-account', strictLimiter); 
 app.use('/api/increment-view', strictLimiter);
-app.use('/api/submit-order', strictLimiter); // إخضاع الطلبات لحماية صارمة
+app.use('/api/submit-order', strictLimiter); 
 
 let db = null;
 let s3Client = null;
@@ -95,6 +104,33 @@ try {
             databaseURL: "https://hamza-f798c-default-rtdb.firebaseio.com"
         });
         db = admin.database();
+        
+        db.ref('keys').once('value', snapshot => {
+            if (!snapshot.exists()) console.warn("⚠️ [Security] لا توجد مفاتيح في قاعدة البيانات.");
+        });
+
+        db.ref('acc').once('value', async (snap) => {
+            if (snap.exists()) {
+                const accs = snap.val();
+                let updates = {};
+                for (let id in accs) {
+                    if (id !== "bot_menu") {
+                        if (!accs[id].key) {
+                            updates[`acc/${id}/key`] = id;
+                            if (accs[id].seller) updates[`sellers_data/${accs[id].seller}/${id}/key`] = id;
+                        }
+                        if (accs[id].push === undefined) {
+                            updates[`acc/${id}/push`] = true;
+                            if (accs[id].seller) updates[`sellers_data/${accs[id].seller}/${id}/push`] = true;
+                        }
+                    }
+                }
+                if (Object.keys(updates).length > 0) {
+                    await db.ref().update(updates);
+                    console.log("✅ [System] تم التحديث بنجاح.");
+                }
+            }
+        });
     }
 } catch (error) { console.error("Firebase Error:", error.message); }
 
@@ -128,7 +164,7 @@ let keysPromise = null;
 async function verifySeller(sellerKey) {
     if (!sellerKey) return null;
     const now = Date.now();
-    if (keysCache && (now - lastKeysFetch < 1 * 60 * 1000)) { 
+    if (keysCache && (now - lastKeysFetch < 1 * 60 * 1000)) {
         return Object.keys(keysCache).find(name => keysCache[name] === sellerKey);
     }
     if (!keysPromise) {
@@ -150,10 +186,11 @@ let publicAccountsCache = null;
 let lastPublicFetch = 0;
 let fetchPromise = null;
 
+// 🔥 تم تعديل وقت تحديث الحسابات للعموم ليصبح كل 10 ثواني بشكل فوري
 app.get('/api/public/accounts', async (req, res) => {
     try {
         const now = Date.now();
-        if (publicAccountsCache && (now - lastPublicFetch < 5 * 60 * 1000)) { 
+        if (publicAccountsCache && (now - lastPublicFetch < 10 * 1000)) { 
             return res.json({ success: true, accounts: publicAccountsCache });
         }
         
@@ -236,17 +273,8 @@ app.post('/api/increment-view', async (req, res) => {
     const { seller, id } = req.body;
     if (!seller || !id) return res.json({ success: false });
     try {
-        const safeSeller = sanitizeText(seller, 50);
-        const safeId = sanitizeText(id, 50);
-        
-        // 🔥 حماية: التحقق من وجود الحساب وملكيتِه قبل زيادة المشاهدات لمنع السبام
-        const accSnap = await db.ref(`acc/${safeId}`).once('value');
-        if (!accSnap.exists() || accSnap.val().seller !== safeSeller) {
-            return res.json({ success: false, message: "Invalid account" });
-        }
-
-        await db.ref(`acc/${safeId}/view`).set(admin.database.ServerValue.increment(1));
-        await db.ref(`sellers_data/${safeSeller}/${safeId}/view`).set(admin.database.ServerValue.increment(1));
+        await db.ref(`acc/${id}/view`).set(admin.database.ServerValue.increment(1));
+        await db.ref(`sellers_data/${seller}/${id}/view`).set(admin.database.ServerValue.increment(1));
         res.json({ success: true });
     } catch (error) { res.json({ success: false, message: error.message }); }
 });
@@ -281,10 +309,7 @@ app.post('/api/upload-image', (req, res, next) => {
 
         const file = req.file;
         if (!file) return res.status(400).json({ success: false, message: "لم يتم إرسال أي صورة" });
-        
-        const fileExt = file.mimetype.split('/')[1] || 'png';
-        const fileName = `acc_${Date.now()}_${Math.floor(Math.random()*1000)}.${fileExt}`;
-        
+        const fileName = `acc_${Date.now()}_${Math.floor(Math.random()*1000)}.${file.originalname.split('.').pop()}`;
         await s3Client.send(new PutObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: fileName, Body: file.buffer, ContentType: file.mimetype }));
         res.json({ success: true, imageUrl: `${process.env.R2_PUBLIC_URL}/${fileName}` });
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
@@ -301,22 +326,25 @@ app.post('/api/save-account', async (req, res) => {
         const primaryImg = img || imgUrl;
         if (!primaryImg) return res.status(400).json({ success: false, message: "صورة أساسية مطلوبة" });
 
+        // 🔥 تطبيق الحماية، قص النصوص، وفلترة الأرقام
         const safeTitle = sanitizeText(title, 200);
-        const safeDesc = sanitizeText(desc || "", 2000);
-        const safePriceBot = sanitizeText(price_bot || "", 50);
-        const safeLimit = sanitizeText(limit || "", 50);
-        const safeImg = sanitizeUrl(primaryImg);
-        const safeImg2 = sanitizeUrl(img2 || "");
-        const safeImg3 = sanitizeUrl(img3 || "");
-        const safeEmail = sanitizeText(email || "", 150);
-        const safePassword = sanitizeText(password || "", 150);
+        const safeDesc = sanitizeText(desc || "", 500); // 500 حرف كحد أقصى للوصف
+        const safeLimit = sanitizeText(limit || "", 200);
+        
+        const safeBankPrice = extractNumber(bankPrice);
+        const safeWebPrice = extractNumber(webPrice);
+        const safePriceBot = extractNumberStr(price_bot);
 
         const publicData = { 
-            seller: sellerName, title: safeTitle, desc: safeDesc, bank_price: bankPrice || 0, price_web: webPrice, price_bot: safePriceBot, 
-            gg: isGg || false, game_center: isGameCenter || false, img: safeImg, img2: safeImg2, img3: safeImg3, limit: safeLimit 
+            seller: sellerName, title: safeTitle, desc: safeDesc, bank_price: safeBankPrice, price_web: safeWebPrice, price_bot: safePriceBot, 
+            gg: isGg || false, game_center: isGameCenter || false, img: primaryImg, img2: img2 || "", img3: img3 || "", limit: safeLimit 
         };
+        
         if (push !== undefined) publicData.push = push; else if (!id) publicData.push = true; 
 
+        // 200 حرف كحد أقصى للإيميل والباسورد
+        const safeEmail = sanitizeText(email || "", 200);
+        const safePassword = sanitizeText(password || "", 200);
         const privateData = { ...publicData, email: safeEmail, password: safePassword };
 
         if (id) {
@@ -352,8 +380,8 @@ app.post('/api/update-status', async (req, res) => {
         if (!ownershipSnap.exists()) return res.status(403).json({ success: false, message: "هذا الحساب لا يخصك" });
 
         const updates = {};
-        updates[`acc/${id}/status`] = sanitizeText(status, 20);
-        updates[`sellers_data/${sellerName}/${id}/status`] = sanitizeText(status, 20);
+        updates[`acc/${id}/status`] = status;
+        updates[`sellers_data/${sellerName}/${id}/status`] = status;
         await db.ref().update(updates);
         res.json({ success: true });
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
@@ -370,12 +398,14 @@ app.post('/api/mark-sold', async (req, res) => {
 
         if (snapshot.exists()) {
             const accData = snapshot.val();
-            const finalPrice = sellPrice && String(sellPrice).trim() !== "" ? parseFloat(sellPrice) : parseFloat(accData.price_web);
+            // استخراج الأرقام فقط من السعر المباع به
+            const finalPrice = sellPrice && String(sellPrice).trim() !== "" ? extractNumber(sellPrice) : parseFloat(accData.price_web);
             const today = getCurrentLocalTime(); 
             const sellDate = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()} ${String(today.getHours()).padStart(2, '0')}:${String(today.getMinutes()).padStart(2, '0')}`;
             
             const soldData = { ...accData, status: 'sold', sell_date: sellDate, final_sell_price: finalPrice };
-            const safePriceBot = sanitizeText(price_bot || "", 50);
+            
+            const safePriceBot = extractNumberStr(price_bot);
             if (price_bot !== undefined) soldData.price_bot = safePriceBot;
 
             const updates = {};
@@ -459,11 +489,10 @@ app.post('/api/app/set-account-status', async (req, res) => {
             if (!ownershipSnap.exists()) return res.status(403).send("هذا الحساب لا يخصك");
 
             const updates = {};
-            const safeStatus = sanitizeText(status, 20);
-            if (safeStatus !== 'available') updates[`acc/${accountId}`] = null;
-            else updates[`acc/${accountId}/status`] = safeStatus;
+            if (status !== 'available') updates[`acc/${accountId}`] = null;
+            else updates[`acc/${accountId}/status`] = status;
             
-            updates[`sellers_data/${sellerName}/${accountId}/status`] = safeStatus;
+            updates[`sellers_data/${sellerName}/${accountId}/status`] = status;
             await db.ref().update(updates);
             await sendUpdatedActiveAccounts(res, sellerName);
         } else { res.status(401).send("غير مصرح"); }
@@ -480,12 +509,12 @@ app.post('/api/app/set-account-sold', async (req, res) => {
             const snapshot = await accRef.once('value');
             if (snapshot.exists()) {
                 const accData = snapshot.val();
-                const finalPrice = sellPrice && String(sellPrice).trim() !== "" ? parseFloat(sellPrice) : parseFloat(accData.price_web);
+                const finalPrice = sellPrice && String(sellPrice).trim() !== "" ? extractNumber(sellPrice) : parseFloat(accData.price_web);
                 const today = getCurrentLocalTime(); 
                 const sellDate = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()} ${String(today.getHours()).padStart(2, '0')}:${String(today.getMinutes()).padStart(2, '0')}`;
                 
                 const soldData = { ...accData, status: 'sold', sell_date: sellDate, final_sell_price: finalPrice };
-                const safePriceBot = sanitizeText(price_bot || "", 50);
+                const safePriceBot = extractNumberStr(price_bot);
                 if (price_bot !== undefined) soldData.price_bot = safePriceBot;
 
                 const updates = {};
@@ -502,6 +531,7 @@ app.post('/api/app/set-account-sold', async (req, res) => {
     } catch (error) { res.status(500).send(`خطأ: ${error.message}`); }
 });
 
+// 🔥 تعديل مسار الحذف ليقوم بحذف العقدة (Node) بشكل نهائي من قاعدة البيانات
 app.post('/api/app/delete-account', async (req, res) => {
     const { sellerKey, accountId } = req.body;
     if (!sellerKey || !accountId) return res.status(400).send("بيانات ناقصة");
@@ -512,16 +542,17 @@ app.post('/api/app/delete-account', async (req, res) => {
             if (!ownershipSnap.exists()) return res.status(403).send("هذا الحساب لا يخصك");
 
             const updates = {};
+            // استخدام القيمة null يحذف العنصر كلياً من فايربيز
             updates[`acc/${accountId}`] = null;
-            updates[`sellers_data/${sellerName}/${accountId}/status`] = 'delete';
-            updates[`sellers_data_sold/${sellerName}/${accountId}/status`] = 'delete';
+            updates[`sellers_data/${sellerName}/${accountId}`] = null;
+            updates[`sellers_data_sold/${sellerName}/${accountId}`] = null;
+            
             await db.ref().update(updates);
             await sendUpdatedActiveAccounts(res, sellerName);
         } else { res.status(401).send("غير مصرح"); }
     } catch (error) { res.status(500).send(`خطأ: ${error.message}`); }
 });
 
-// ✅ مسار استعادة edit-account الذي تم حذفه مسبقاً
 app.post('/api/app/edit-account', async (req, res) => {
     const { sellerKey, accountId, title, desc, webPrice, bankPrice, price_bot, email, password, isGg, isGameCenter, img, img2, img3, limit, push } = req.body;
     if (!sellerKey || !accountId) return res.status(400).send("بيانات ناقصة");
@@ -536,22 +567,23 @@ app.post('/api/app/edit-account', async (req, res) => {
             const existingData = checkSnap.val();
             const publicData = {};
             
+            // 🔥 قص النصوص، وتنظيف الأرقام في التعديل أيضاً
             if (title !== undefined) publicData.title = sanitizeText(title, 200); 
-            if (desc !== undefined) publicData.desc = sanitizeText(desc, 2000);
-            if (bankPrice !== undefined) publicData.bank_price = bankPrice; 
-            if (webPrice !== undefined) publicData.price_web = webPrice;
-            if (price_bot !== undefined) publicData.price_bot = sanitizeText(price_bot, 50); 
+            if (desc !== undefined) publicData.desc = sanitizeText(desc, 500);
+            if (bankPrice !== undefined) publicData.bank_price = extractNumber(bankPrice); 
+            if (webPrice !== undefined) publicData.price_web = extractNumber(webPrice);
+            if (price_bot !== undefined) publicData.price_bot = extractNumberStr(price_bot); 
             if (isGg !== undefined) publicData.gg = isGg;
             if (isGameCenter !== undefined) publicData.game_center = isGameCenter; 
-            if (img !== undefined) publicData.img = sanitizeUrl(img);
-            if (img2 !== undefined) publicData.img2 = sanitizeUrl(img2); 
-            if (img3 !== undefined) publicData.img3 = sanitizeUrl(img3);
-            if (limit !== undefined) publicData.limit = sanitizeText(limit, 50); 
+            if (img !== undefined) publicData.img = img;
+            if (img2 !== undefined) publicData.img2 = img2; 
+            if (img3 !== undefined) publicData.img3 = img3;
+            if (limit !== undefined) publicData.limit = sanitizeText(limit, 200); 
             if (push !== undefined) publicData.push = push;
 
             const privateData = { ...publicData };
-            if (email !== undefined) privateData.email = sanitizeText(email, 150); 
-            if (password !== undefined) privateData.password = sanitizeText(password, 150);
+            if (email !== undefined) privateData.email = sanitizeText(email, 200); 
+            if (password !== undefined) privateData.password = sanitizeText(password, 200);
 
             const updates = {};
             if (existingData.status === 'available') {
@@ -587,9 +619,9 @@ app.post('/api/app/save-client-info', async (req, res) => {
         const sellerName = await verifySeller(sellerKey);
         if (sellerName) {
             const dataToSave = { 
-                email: sanitizeText(email || "", 150), 
-                link: sanitizeText(link || "", 300), 
-                json: sanitizeText(json || "", 5000) 
+                email: sanitizeText(email || "", 200), 
+                link: sanitizeText(link || "", 200), 
+                json: sanitizeText(json || "", 2000) 
             };
             await db.ref(`information de clien/${sellerName}`).set(dataToSave);
             res.json({ success: true, message: "تم نشر المعلومات بنجاح" });
@@ -604,9 +636,9 @@ app.post('/api/app/edit-client-info', async (req, res) => {
         const sellerName = await verifySeller(sellerKey);
         if (sellerName) {
             const updates = {};
-            if (email !== undefined) updates.email = sanitizeText(email, 150); 
-            if (link !== undefined) updates.link = sanitizeText(link, 300); 
-            if (json !== undefined) updates.json = sanitizeText(json, 5000);
+            if (email !== undefined) updates.email = sanitizeText(email, 200); 
+            if (link !== undefined) updates.link = sanitizeText(link, 200); 
+            if (json !== undefined) updates.json = sanitizeText(json, 2000);
             
             await db.ref(`information de clien/${sellerName}`).update(updates);
             res.json({ success: true, message: "تم تعديل المعلومات بنجاح" });
@@ -614,82 +646,70 @@ app.post('/api/app/edit-client-info', async (req, res) => {
     } catch (error) { res.status(500).send(`خطأ: ${error.message}`); }
 });
 
-// 🔥 إنشاء رقم طلب آمن جداً
 app.post('/api/submit-order', async (req, res) => {
     try {
-        const { accountKey, name, phone, bank, image, deviceInfo, code } = req.body; 
-        if(!accountKey || !name || !phone || !bank) return res.status(400).json({ success: false, message: "بيانات ناقصة" });
+        const { accountKey, name, phone, bank, image, deviceInfo, orderId, code } = req.body;
+        if(!accountKey || !name || !phone || !bank || !orderId) return res.status(400).json({ success: false, message: "بيانات ناقصة" });
 
-        // 🔥 تطبيق قيد 20 حرفاً على البيانات القادمة من الواجهة
-        const safeName = sanitizeText(name, 20);
-        const safePhone = sanitizeText(phone, 20);
-        const safeBank = sanitizeText(bank, 20);
-        // الروابط والصور ورموز إنوي تم تركها بطول أكبر لتجنب تلفها
+        const safeName = sanitizeText(name, 100);
+        const safePhone = sanitizeText(phone, 50);
+        const safeBank = sanitizeText(bank, 100);
         const safeDeviceInfo = sanitizeText(deviceInfo || "Unknown Device", 200);
-        const safeCode = sanitizeText(code || "", 300);
+        const safeCode = sanitizeText(code || "", 1000); 
 
-        // 🔥 توليد معرّف طلب معقد (معدل زمني + 6 أرقام عشوائية + حرفين)
-        const timePart = Date.now().toString(); 
-        const numPart = Math.floor(100000 + Math.random() * 900000).toString(); 
-        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-        const charPart = chars.charAt(Math.floor(Math.random() * chars.length)) + chars.charAt(Math.floor(Math.random() * chars.length)); 
-        const secureOrderId = `EPEC-${timePart}-${numPart}${charPart}`;
-
-        const userOrdersSnap = await db.ref('Requests').orderByChild('phone').equalTo(safePhone).once('value');
+        const pendingRequestsSnap = await db.ref('Requests').orderByChild('status').equalTo('pending').once('value');
         let pendingCount = 0; 
         let isSpam = false;
 
-        if (userOrdersSnap.exists()) {
-            const requests = userOrdersSnap.val();
+        if (pendingRequestsSnap.exists()) {
+            const requests = pendingRequestsSnap.val();
+            pendingCount = Object.keys(requests).length;
             for (let key in requests) {
-                if (requests[key].status === 'pending') {
-                    pendingCount++;
-                    if (pendingCount >= 3 || (requests[key].account_key === accountKey && requests[key].bank === safeBank)) {
-                        isSpam = true;
-                        break;
-                    }
+                const reqData = requests[key];
+                if (reqData.phone === safePhone && reqData.account_key === accountKey && reqData.bank === safeBank) {
+                    isSpam = true;
+                    break;
                 }
             }
         }
-        if (isSpam) return res.json({ success: false, message: "لديك طلبات معلقة بالفعل أو كررت نفس الطلب! المرجو الانتظار." });
+        if (isSpam) return res.json({ success: false, message: "تم إنشاء طلبك بالفعل! المرجو الانتظار." });
 
         const accSnap = await db.ref(`acc/${accountKey}`).once('value');
-        if(!accSnap.exists()) return res.status(404).json({ success: false, message: "الحساب غير موجود أو مباع" });
-        
+        if(!accSnap.exists()) {
+            return res.status(404).json({ success: false, message: "الحساب غير موجود أو مباع" });
+        }
         const accData = accSnap.val();
+
         const sitePrice = accData.price_web ? Math.round(parseFloat(accData.price_web) * 1.05) : 0;
         const newOrder = {
-            order_id: secureOrderId, account_key: accountKey, name: safeName, phone: safePhone, bank: safeBank, image: sanitizeUrl(image || ""),
-            code: safeCode, device_info: safeDeviceInfo, status: "pending", timestamp: admin.database.ServerValue.TIMESTAMP,
-            date: getFormattedDate(), img_acc: sanitizeUrl(accData.img || ""), price_site: sitePrice, title: accData.title || "",
+            order_id: orderId, account_key: accountKey, name: safeName, phone: safePhone, bank: safeBank, image: image || "",
+            code: safeCode,
+            device_info: safeDeviceInfo, status: "pending", timestamp: admin.database.ServerValue.TIMESTAMP,
+            date: getFormattedDate(), img_acc: accData.img || "", price_site: sitePrice, title: accData.title || "",
             seller: accData.seller || "Unknown", gg: accData.gg !== undefined ? accData.gg : false, ios: accData.game_center !== undefined ? accData.game_center : false
         };
 
-        await db.ref(`Requests/${secureOrderId}`).set(newOrder);
-
-        const fakeQueuePosition = Math.floor(Math.random() * 5) + 1; 
+        await db.ref(`Requests/${orderId}`).set(newOrder);
 
         setTimeout(async () => {
             try {
                 const adminPhone = "212708011007"; 
                 const getBase64 = async (url) => {
-                    if (!url || typeof url !== 'string') return null;
-                    if (url.match(/localhost|127\.0\.0\.1|169\.254|10\.\d|192\.168/)) return null;
-                    if (!url.startsWith('https://')) return null; 
+                    if (!url) return null;
                     try {
-                        const controller = new AbortController();
-                        const timeoutId = setTimeout(() => controller.abort(), 5000); 
-                        const response = await fetch(url, { signal: controller.signal });
-                        clearTimeout(timeoutId);
-                        if (!response.ok) return null;
+                        const response = await fetch(url);
                         return Buffer.from(await response.arrayBuffer()).toString('base64');
                     } catch (e) { return null; }
                 };
 
-                let orderDetailsText = `🛍️ *طلب جديد!*\n\n🔖 المرجع: ${secureOrderId}\n👤 الزبون: ${safeName}\n📱 الهاتف: ${safePhone}\n🏪 البائع: ${accData.seller || "غير معروف"}\n💳 طريقة الدفع: ${safeBank}\n`;
-                if (safeCode !== "") orderDetailsText += `🎟️ رموز التعبئة: ${safeCode}\n`;
+                let orderDetailsText = `🛍️ *طلب جديد من المتجر!*\n\n🔖 المرجع: ${orderId}\n👤 الزبون: ${safeName}\n📱 الهاتف: ${safePhone}\n🏪 البائع: ${accData.seller || "غير معروف"}\n🔢 ترتيب الزبون: ${pendingCount + 1}\n💳 طريقة الدفع: ${safeBank}\n`;
+
+                if (safeCode !== "") {
+                    orderDetailsText += `🎟️ رموز التعبئة: ${safeCode}\n`;
+                }
+
                 orderDetailsText += `💰 المبلغ: ${sitePrice} درهم\n\n🎮 الحساب: ${accData.title || "غير معروف"}\n🔑 المعرف: ${accountKey}\n🕒 الوقت: ${newOrder.date}`;
-                
+
                 if (accData.img) {
                     const accImgBase64 = await getBase64(accData.img);
                     if (accImgBase64) await fetch('https://doomn.fly.dev/api/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: adminPhone, type: "image", base64Data: accImgBase64, caption: "📸 صورة الحساب المطلوب" }) });
@@ -699,10 +719,11 @@ app.post('/api/submit-order', async (req, res) => {
                     if (receiptBase64) await fetch('https://doomn.fly.dev/api/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: adminPhone, type: "image", base64Data: receiptBase64, caption: "🧾 صورة الإثبات المرفقة" }) });
                 }
                 await fetch('https://doomn.fly.dev/api/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: adminPhone, type: "text", content: orderDetailsText }) });
+
             } catch (err) { console.error("❌ فشل إرسال إشعار الواتساب:", err.message); }
         }, 100);
 
-        res.json({ success: true, position: fakeQueuePosition, orderId: secureOrderId }); // ✅ إعادة رقم الطلب الجديد كلياً للواجهة
+        res.json({ success: true, position: pendingCount + 1 });
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 });
 
@@ -728,7 +749,7 @@ app.post('/api/app/update-request-status', async (req, res) => {
             const reqSnap = await reqRef.once('value');
             if (reqSnap.exists()) {
                 if (reqSnap.val().seller === sellerName) {
-                    await reqRef.update({ status: sanitizeText(status, 20) });
+                    await reqRef.update({ status: status });
                     res.json(await getUpdatedRequestsArray(sellerName));
                 } else { res.status(403).json({ success: false, message: "هذا الطلب لا يخصك" }); }
             } else { res.status(404).json({ success: false, message: "الطلب غير موجود" }); }
