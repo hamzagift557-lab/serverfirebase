@@ -74,14 +74,17 @@ app.post('/webhook', async (req, res) => {
 // 3. دالة جلب الفيديوهات (Scraping) وإرسالها
 async function fetchAndSendVideos(sender_psid, page = 1) {
     try {
-        // نستخدم رابط القائمة العامة لتسهيل التنقل بين الصفحات
-        const targetUrl = `https://www.pornhub.com/video?page=${page}`;
+        // حل اللغز: إجبار الموقع على عرض الفيديوهات الساخنة (Hot) وتجنب صفحة المقابلات الافتراضية للروبوتات
+        const targetUrl = `https://www.pornhub.com/video?o=ht&page=${page}`;
         
-        // إرسال طلب للموقع مع تخطي رسالة الـ 18 سنة باستخدام الـ Cookies
+        // تدعيم التنكر ليبدو السيرفر كمتصفح حقيقي 100%
         const response = await axios.get(targetUrl, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
-                'Cookie': 'age_verified=1; bs=1; accessAgeDisclaimerPH=1;' // حل مشكلة رسالة العمر
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://www.pornhub.com/',
+                'Cookie': 'age_verified=1; bs=1; accessAgeDisclaimerPH=1; platform=pc;' 
             }
         });
 
@@ -91,14 +94,14 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
 
         // استخراج العناصر
         for (let i = 0; i < videoElements.length; i++) {
-            if (elements.length >= 9) break; // نأخذ 9 فيديوهات لنترك البطاقة العاشرة لزر "المزيد"
+            if (elements.length >= 9) break;
 
             let element = videoElements[i];
             let title = $(element).find('.title a').text().trim();
             let link = $(element).find('.title a').attr('href');
             let imgUrl = $(element).find('img').attr('src') || $(element).find('img').attr('data-thumb_url') || $(element).find('img').attr('data-mediumthumb');
 
-            // حل مشكلة الفيديوهات الطويلة: نتأكد أن الرابط يحتوي على 'viewkey' (وهي الفيديوهات العادية الحقيقية)
+            // التأكد من أن الرابط حقيقي ويحتوي على 'viewkey' وتجاهل إعلانات المقابلات
             if (title && link && link.includes('viewkey') && imgUrl && !imgUrl.includes('data:image')) {
                 let fullLink = 'https://www.pornhub.com' + link;
                 elements.push({
@@ -118,7 +121,7 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
 
         if (elements.length > 0) {
             // إضافة بطاقة "زر المزيد" في نهاية القائمة
-            let placeholderImage = elements[0].image_url; // نستخدم صورة أول فيديو كخلفية لزر المزيد لتجنب أخطاء فيسبوك
+            let placeholderImage = elements[0].image_url; 
             elements.push({
                 title: "المزيد من الفيديوهات 🔄",
                 image_url: placeholderImage,
