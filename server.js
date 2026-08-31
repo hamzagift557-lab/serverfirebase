@@ -37,20 +37,27 @@ app.post('/webhook', async (req, res) => {
         if (body.object === 'page') {
             for (const entry of body.entry) {
                 let webhook_event = entry.messaging[0];
-                let sender_psid = webhook_event.sender.id; // آيدي الشخص الذي أرسل الرسالة
+                let sender_psid = webhook_event.sender.id;
 
-                // إذا كانت رسالة نصية عادية (أي رسالة سترسلها ستشغل البوت)
+                // إذا كانت رسالة نصية عادية
                 if (webhook_event.message && webhook_event.message.text) {
-                    console.log(`📩 استلام رسالة من ${sender_psid}، جاري جلب الفيديوهات...`);
-                    await fetchAndSendVideos(sender_psid);
+                    console.log(`📩 استلام رسالة من ${sender_psid}، جاري جلب الفيديوهات (الصفحة 1)...`);
+                    await fetchAndSendVideos(sender_psid, 1);
                 } 
-                // إذا قام المستخدم بالضغط على زر "تحميل هذا الفيديو"
+                // إذا قام المستخدم بالضغط على زر
                 else if (webhook_event.postback) {
-                    let payload = webhook_event.postback.payload; // الرابط الذي خزنناه في الزر
-                    console.log(`🔘 تم الضغط على زر لفيديو: ${payload}`);
+                    let payload = webhook_event.postback.payload;
+                    console.log(`🔘 تم الضغط على زر: ${payload}`);
                     
-                    // الخطوة القادمة ستكون هنا (معالجة الرابط وتحميل الفيديو)
-                    await sendTextMessage(sender_psid, `تم اختيار الفيديو! جارٍ تجهيز الرابط للخطوة القادمة: \n${payload}`);
+                    // التحقق مما إذا كان الزر هو "زر المزيد"
+                    if (payload.startsWith('LOAD_MORE_')) {
+                        let nextPage = parseInt(payload.split('_')[2]);
+                        console.log(`🔄 جاري جلب الصفحة رقم ${nextPage}...`);
+                        await fetchAndSendVideos(sender_psid, nextPage);
+                    } else {
+                        // الخطوة القادمة ستكون هنا (معالجة الرابط وتحميل الفيديو)
+                        await sendTextMessage(sender_psid, `تم اختيار الفيديو! جارٍ تجهيز الرابط للخطوة القادمة: \n${payload}`);
+                    }
                 }
             }
             res.status(200).send('EVENT_RECEIVED');
@@ -65,46 +72,66 @@ app.post('/webhook', async (req, res) => {
 });
 
 // 3. دالة جلب الفيديوهات (Scraping) وإرسالها
-async function fetchAndSendVideos(sender_psid) {
+async function fetchAndSendVideos(sender_psid, page = 1) {
     try {
-        // نستخدم User-Agent وهمي لكي لا يحظرنا الموقع ظناً أننا روبوت
-        const targetUrl = 'https://www.pornhub.com/';
+        // نستخدم رابط القائمة العامة لتسهيل التنقل بين الصفحات
+        const targetUrl = `https://www.pornhub.com/video?page=${page}`;
+        
+        // إرسال طلب للموقع مع تخطي رسالة الـ 18 سنة باستخدام الـ Cookies
         const response = await axios.get(targetUrl, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+                'Cookie': 'age_verified=1; bs=1; accessAgeDisclaimerPH=1;' // حل مشكلة رسالة العمر
             }
         });
 
         const $ = cheerio.load(response.data);
         let elements = [];
+        let videoElements = $('.pcVideoListItem').toArray();
 
-        // استخراج العناصر بناءً على كلاسات الموقع (قد تتغير وتحتاج لتحديث مستقبلاً)
-        // يبحث هذا الكود عن قائمة الفيديوهات المعروضة
-        $('.pcVideoListItem').each((index, element) => {
-            if (elements.length < 10) { // نأخذ 10 عناصر كحد أقصى (حد فيسبوك)
-                let title = $(element).find('.title a').text().trim();
-                let link = 'https://www.pornhub.com' + $(element).find('.title a').attr('href');
-                let imgUrl = $(element).find('img').attr('src') || $(element).find('img').attr('data-thumb_url');
+        // استخراج العناصر
+        for (let i = 0; i < videoElements.length; i++) {
+            if (elements.length >= 9) break; // نأخذ 9 فيديوهات لنترك البطاقة العاشرة لزر "المزيد"
 
-                // نتأكد من وجود صورة وعنوان ورابط قبل إضافته للقائمة
-                if (title && link && imgUrl && !imgUrl.includes('data:image')) {
-                    elements.push({
-                        title: title.substring(0, 75) + "..", // فيسبوك يقبل 80 حرف كحد أقصى
-                        image_url: imgUrl,
-                        subtitle: "اضغط لتحميل هذا الفيديو",
-                        buttons: [
-                            {
-                                type: "postback",
-                                title: "📥 اختيار للتحميل",
-                                payload: link // نخزن رابط الفيديو هنا لكي نستخدمه عند الضغط
-                            }
-                        ]
-                    });
-                }
+            let element = videoElements[i];
+            let title = $(element).find('.title a').text().trim();
+            let link = $(element).find('.title a').attr('href');
+            let imgUrl = $(element).find('img').attr('src') || $(element).find('img').attr('data-thumb_url') || $(element).find('img').attr('data-mediumthumb');
+
+            // حل مشكلة الفيديوهات الطويلة: نتأكد أن الرابط يحتوي على 'viewkey' (وهي الفيديوهات العادية الحقيقية)
+            if (title && link && link.includes('viewkey') && imgUrl && !imgUrl.includes('data:image')) {
+                let fullLink = 'https://www.pornhub.com' + link;
+                elements.push({
+                    title: title.substring(0, 75) + "..",
+                    image_url: imgUrl,
+                    subtitle: "اضغط لتحميل هذا الفيديو",
+                    buttons: [
+                        {
+                            type: "postback",
+                            title: "📥 اختيار للتحميل",
+                            payload: fullLink
+                        }
+                    ]
+                });
             }
-        });
+        }
 
         if (elements.length > 0) {
+            // إضافة بطاقة "زر المزيد" في نهاية القائمة
+            let placeholderImage = elements[0].image_url; // نستخدم صورة أول فيديو كخلفية لزر المزيد لتجنب أخطاء فيسبوك
+            elements.push({
+                title: "المزيد من الفيديوهات 🔄",
+                image_url: placeholderImage,
+                subtitle: `الانتقال إلى الصفحة ${page + 1}`,
+                buttons: [
+                    {
+                        type: "postback",
+                        title: "عرض المزيد ➡️",
+                        payload: `LOAD_MORE_${page + 1}`
+                    }
+                ]
+            });
+
             // إرسال قائمة العناصر لفيسبوك
             await sendCarouselMessage(sender_psid, elements);
         } else {
@@ -152,7 +179,7 @@ async function callSendAPI(requestBody) {
     } catch (error) {
         console.error("⚠️ فشل إرسال الرد إلى فيسبوك. الخطأ الحقيقي:");
         if (error.response) {
-            console.error(error.response.data); // يطبع رد فيسبوك المفصل للخطأ
+            console.error(error.response.data);
         } else {
             console.error(error);
         }
