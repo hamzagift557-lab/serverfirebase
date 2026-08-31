@@ -1,3 +1,4 @@
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
@@ -39,23 +40,18 @@ app.post('/webhook', async (req, res) => {
                 let webhook_event = entry.messaging[0];
                 let sender_psid = webhook_event.sender.id;
 
-                // إذا كانت رسالة نصية عادية
                 if (webhook_event.message && webhook_event.message.text) {
-                    console.log(`📩 استلام رسالة من ${sender_psid}، جاري جلب الفيديوهات (الصفحة 1)...`);
-                    await fetchAndSendVideos(sender_psid, 1);
+                    console.log(`📩 استلام رسالة من ${sender_psid}، جاري جلب الفيديوهات...`);
+                    await fetchAndSendVideos(sender_psid);
                 } 
-                // إذا قام المستخدم بالضغط على زر
                 else if (webhook_event.postback) {
                     let payload = webhook_event.postback.payload;
                     console.log(`🔘 تم الضغط على زر: ${payload}`);
                     
-                    // التحقق مما إذا كان الزر هو "زر المزيد"
                     if (payload.startsWith('LOAD_MORE_')) {
-                        let nextPage = parseInt(payload.split('_')[2]);
-                        console.log(`🔄 جاري جلب الصفحة رقم ${nextPage}...`);
-                        await fetchAndSendVideos(sender_psid, nextPage);
+                        // يمكنك لاحقاً تعديل هذا الجزء لدعم الصفحات في رابط البحث
+                        await sendTextMessage(sender_psid, "ميزة المزيد قيد التحديث مع الرابط الجديد.");
                     } else {
-                        // الخطوة القادمة ستكون هنا (معالجة الرابط وتحميل الفيديو)
                         await sendTextMessage(sender_psid, `تم اختيار الفيديو! جارٍ تجهيز الرابط للخطوة القادمة: \n${payload}`);
                     }
                 }
@@ -72,12 +68,11 @@ app.post('/webhook', async (req, res) => {
 });
 
 // 3. دالة جلب الفيديوهات (Scraping) وإرسالها
-async function fetchAndSendVideos(sender_psid, page = 1) {
+async function fetchAndSendVideos(sender_psid) {
     try {
-        // حل اللغز: إجبار الموقع على عرض الفيديوهات الساخنة (Hot) وتجنب صفحة المقابلات الافتراضية للروبوتات
-        const targetUrl = `https://www.pornhub.com/video?o=ht&page=${page}`;
+        // الرابط الجديد الذي اقترحته للبحث عن الجديد
+        const targetUrl = `https://www.pornhub.com/video/search?search=new`;
         
-        // تدعيم التنكر ليبدو السيرفر كمتصفح حقيقي 100%
         const response = await axios.get(targetUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -92,16 +87,14 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
         let elements = [];
         let videoElements = $('.pcVideoListItem').toArray();
 
-        // استخراج العناصر
         for (let i = 0; i < videoElements.length; i++) {
-            if (elements.length >= 9) break;
+            if (elements.length >= 10) break; // سحب 10 بطاقات
 
             let element = videoElements[i];
             let title = $(element).find('.title a').text().trim();
             let link = $(element).find('.title a').attr('href');
             let imgUrl = $(element).find('img').attr('src') || $(element).find('img').attr('data-thumb_url') || $(element).find('img').attr('data-mediumthumb');
 
-            // التأكد من أن الرابط حقيقي ويحتوي على 'viewkey' وتجاهل إعلانات المقابلات
             if (title && link && link.includes('viewkey') && imgUrl && !imgUrl.includes('data:image')) {
                 let fullLink = 'https://www.pornhub.com' + link;
                 elements.push({
@@ -120,25 +113,9 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
         }
 
         if (elements.length > 0) {
-            // إضافة بطاقة "زر المزيد" في نهاية القائمة
-            let placeholderImage = elements[0].image_url; 
-            elements.push({
-                title: "المزيد من الفيديوهات 🔄",
-                image_url: placeholderImage,
-                subtitle: `الانتقال إلى الصفحة ${page + 1}`,
-                buttons: [
-                    {
-                        type: "postback",
-                        title: "عرض المزيد ➡️",
-                        payload: `LOAD_MORE_${page + 1}`
-                    }
-                ]
-            });
-
-            // إرسال قائمة العناصر لفيسبوك
             await sendCarouselMessage(sender_psid, elements);
         } else {
-            await sendTextMessage(sender_psid, "لم أتمكن من العثور على فيديوهات، ربما تم حظر السكرابنج أو تغير تصميم الموقع.");
+            await sendTextMessage(sender_psid, "لم أتمكن من العثور على فيديوهات، الموقع يقوم بحظر IP السيرفر الخاص بنا ويعرض محتوى فارغ أو إعلانات.");
         }
 
     } catch (error) {
@@ -157,7 +134,7 @@ async function sendTextMessage(sender_psid, text) {
     await callSendAPI(requestBody);
 }
 
-// 5. دالة إرسال القائمة (Carousel / Generic Template)
+// 5. دالة إرسال القائمة (Carousel)
 async function sendCarouselMessage(sender_psid, elements) {
     const requestBody = {
         recipient: { id: sender_psid },
@@ -174,7 +151,7 @@ async function sendCarouselMessage(sender_psid, elements) {
     await callSendAPI(requestBody);
 }
 
-// 6. دالة التواصل مع API فيسبوك لإرسال الرد
+// 6. دالة التواصل مع API فيسبوك
 async function callSendAPI(requestBody) {
     try {
         await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, requestBody);
@@ -189,7 +166,6 @@ async function callSendAPI(requestBody) {
     }
 }
 
-// تشغيل السيرفر على المنفذ 8080 والعنوان 0.0.0.0 المخصص لـ Fly.io
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 السيرفر يعمل بنجاح على المنفذ ${PORT}`);
