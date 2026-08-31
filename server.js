@@ -56,9 +56,9 @@ app.post('/webhook', (req, res) => {
     }
 });
 
-// تشغيل السيرفر
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+// تشغيل السيرفر على المنفذ 8080 والعنوان 0.0.0.0 المخصص لـ Fly.io
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 السيرفر يعمل بنجاح على المنفذ ${PORT}`);
     console.log(`في إعدادات فيسبوك، استخدم التوكن التالي للتحقق: ${VERIFY_TOKEN}`);
 });
