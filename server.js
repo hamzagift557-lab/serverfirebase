@@ -159,32 +159,37 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
 }
 
 // 4. دالة استخراج وتحميل وإرسال الفيديو
+async function 
+
+
+// 4. دالة استخراج وتحميل وإرسال الفيديو (محدثة لتخطي فحص الأمان SSL)
 async function downloadAndSendVideo(sender_psid, videoUrl) {
     let filePath = '';
     try {
         await sendTextMessage(sender_psid, "⏳ جاري استخراج رابط الفيديو الأساسي، يرجى الانتظار...");
 
-        // استخدام بروكسي ScraperAPI لتشغيل الأداة
         const proxyUrl = `http://scraperapi:${SCRAPER_API_KEY}@proxy-server.scraperapi.com:8001`;
         
-        // جلب أسوأ جودة (mp4) لضمان أن الحجم أقل من 25MB لفيسبوك
+        // أضفنا --no-check-certificate لتخطي مشكلة الـ SSL في السيرفر
         const videoInfo = await youtubedl(videoUrl, {
             dumpJson: true,
             proxy: proxyUrl,
-            format: 'worst[ext=mp4]'
+            format: 'worst[ext=mp4]',
+            noCheckCertificate: true
         });
 
         const directUrl = videoInfo.url;
         await sendTextMessage(sender_psid, "📥 تم استخراج الرابط بنجاح! جاري تحميل الفيديو للسيرفر ثم إرساله لك...");
 
-        // حفظ الفيديو في مسار مؤقت
         filePath = path.join('/tmp', `video_${Date.now()}.mp4`);
         const writer = fs.createWriteStream(filePath);
         
         const downloadResponse = await axios({
             url: directUrl,
             method: 'GET',
-            responseType: 'stream'
+            responseType: 'stream',
+            // تخطي التحقق من الـ SSL أيضاً لطلب التحميل المباشر
+            httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false })
         });
 
         downloadResponse.data.pipe(writer);
@@ -196,7 +201,6 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
 
         await sendTextMessage(sender_psid, "🚀 اكتمل التحميل في السيرفر، جاري رفعه إلى ماسنجر...");
 
-        // رفع الفيديو لفيسبوك باستخدام form-data
         const form = new FormData();
         form.append('recipient', JSON.stringify({ id: sender_psid }));
         form.append('message', JSON.stringify({
@@ -215,7 +219,6 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
 
         console.log("✅ تم إرسال الفيديو للمستخدم بنجاح!");
 
-        // حذف الفيديو لتنظيف مساحة السيرفر
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
     } catch (error) {
@@ -225,12 +228,12 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
             console.error("تفاصيل رد فيسبوك: ", JSON.stringify(error.response.data, null, 2));
         }
         
-        // تنظيف الملف إذا فشل الإرسال
         if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
-        await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء التحميل. قد يكون حجم الفيديو أكبر من 25MB (الحد الأقصى لفيسبوك) أو أن الموقع منع التحميل.");
+        await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء التحميل. يرجى المحاولة في فيديو آخر.");
     }
 }
+
 
 // 5. دالة إرسال رسالة نصية عادية
 async function sendTextMessage(sender_psid, text) {
