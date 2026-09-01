@@ -13,5 +13,6 @@
     "express": "^4.19.2",
     "form-data": "^4.0.0",
     "youtube-dl-exec": "^3.0.2"
+    "cloudinary": "^1.41.3"
   }
 }
