@@ -75,7 +75,7 @@ app.post('/webhook', (req, res) => {
     }
 });
 
-// 3. دالة جلب الفيديوهات عبر ScraperAPI (مع إصلاح الصور والمدة والمزيد)
+// 3. دالة جلب الفيديوهات عبر ScraperAPI
 async function fetchAndSendVideos(sender_psid, page = 1) {
     try {
         const targetUrl = `https://www.pornhub.com/video/search?search=new&page=${page}`;
@@ -95,19 +95,17 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
         let videoElements = $('.pcVideoListItem').toArray();
 
         for (let i = 0; i < videoElements.length; i++) {
-            if (elements.length >= 9) break; // نترك العنصر العاشر لزر المزيد
+            if (elements.length >= 9) break; 
 
             let element = videoElements[i];
             let title = $(element).find('.title a').text().trim();
             let link = $(element).find('.title a').attr('href');
             
-            // إصلاح الصور: البحث في الخصائص المتعددة للـ Lazy Loading
             let imgUrl = $(element).find('img').attr('data-image') || 
                          $(element).find('img').attr('data-mediumthumb') || 
                          $(element).find('img').attr('data-thumb_url') || 
                          $(element).find('img').attr('src');
             
-            // جلب وقت الفيديو
             let duration = $(element).find('.duration').text().trim();
 
             if (title && link && link.includes('viewkey') && imgUrl && !imgUrl.startsWith('data:image')) {
@@ -131,7 +129,6 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
         }
 
         if (elements.length > 0) {
-            // إضافة زر المزيد
             let placeholderImage = elements[0].image_url; 
             elements.push({
                 title: "المزيد من الفيديوهات 🔄",
@@ -158,47 +155,24 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
     }
 }
 
-
-
-
-// 4. دالة استخراج وتحميل وإرسال الفيديو (محدثة لتخطي فحص الأمان SSL)
+// 4. دالة استخراج وتحميل وإرسال الفيديو (النسخة الحاسمة عبر yt-dlp مباشرة)
 async function downloadAndSendVideo(sender_psid, videoUrl) {
     let filePath = '';
     try {
-        await sendTextMessage(sender_psid, "⏳ جاري استخراج رابط الفيديو الأساسي، يرجى الانتظار...");
+        await sendTextMessage(sender_psid, "⏳ جاري استخراج وتحميل الفيديو عبر السيرفر، قد يستغرق الأمر بضع ثوانٍ...");
 
         const proxyUrl = `http://scraperapi:${SCRAPER_API_KEY}@proxy-server.scraperapi.com:8001`;
+        filePath = path.join('/tmp', `video_${Date.now()}.mp4`);
         
-        // أضفنا --no-check-certificate لتخطي مشكلة الـ SSL في السيرفر
-        const videoInfo = await youtubedl(videoUrl, {
-            dumpJson: true,
+        // استخدام الأداة للتحميل المباشر إلى الملف، وتخطي مشاكل الـ IP والـ SSL تماماً
+        await youtubedl(videoUrl, {
             proxy: proxyUrl,
             format: 'worst[ext=mp4]',
-            noCheckCertificate: true
+            noCheckCertificate: true,
+            output: filePath
         });
 
-        const directUrl = videoInfo.url;
-        await sendTextMessage(sender_psid, "📥 تم استخراج الرابط بنجاح! جاري تحميل الفيديو للسيرفر ثم إرساله لك...");
-
-        filePath = path.join('/tmp', `video_${Date.now()}.mp4`);
-        const writer = fs.createWriteStream(filePath);
-        
-        const downloadResponse = await axios({
-            url: directUrl,
-            method: 'GET',
-            responseType: 'stream',
-            // تخطي التحقق من الـ SSL أيضاً لطلب التحميل المباشر
-            httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false })
-        });
-
-        downloadResponse.data.pipe(writer);
-
-        await new Promise((resolve, reject) => {
-            writer.on('finish', resolve);
-            writer.on('error', reject);
-        });
-
-        await sendTextMessage(sender_psid, "🚀 اكتمل التحميل في السيرفر، جاري رفعه إلى ماسنجر...");
+        await sendTextMessage(sender_psid, "🚀 اكتمل التحميل في السيرفر بنجاح! جاري رفعه إلى ماسنجر...");
 
         const form = new FormData();
         form.append('recipient', JSON.stringify({ id: sender_psid }));
@@ -232,7 +206,6 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
         await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء التحميل. يرجى المحاولة في فيديو آخر.");
     }
 }
-
 
 // 5. دالة إرسال رسالة نصية عادية
 async function sendTextMessage(sender_psid, text) {
