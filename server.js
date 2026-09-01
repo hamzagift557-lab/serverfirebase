@@ -41,7 +41,6 @@ app.post('/webhook', (req, res) => {
     let body = req.body;
 
     if (body.object === 'page') {
-        // إرسال الرد فوراً لفيسبوك لتجنب إعادة إرسال الرسالة أثناء التحميل الطويل
         res.status(200).send('EVENT_RECEIVED');
 
         body.entry.forEach(async function(entry) {
@@ -50,7 +49,7 @@ app.post('/webhook', (req, res) => {
 
             try {
                 if (webhook_event.message && webhook_event.message.text) {
-                    console.log(`📩 استلام رسالة من ${sender_psid}، جاري جلب الفيديوهات...`);
+                    console.log(`📩 استلام رسالة من ${sender_psid}، جاري جلب فيديوهات XVideos...`);
                     await fetchAndSendVideos(sender_psid, 1);
                 } 
                 else if (webhook_event.postback) {
@@ -61,7 +60,6 @@ app.post('/webhook', (req, res) => {
                         let nextPage = parseInt(payload.split('_')[2]);
                         await fetchAndSendVideos(sender_psid, nextPage);
                     } else {
-                        // بدء عملية استخراج وتحميل الفيديو
                         await downloadAndSendVideo(sender_psid, payload);
                     }
                 }
@@ -75,41 +73,42 @@ app.post('/webhook', (req, res) => {
     }
 });
 
-// 3. دالة جلب الفيديوهات عبر ScraperAPI
+// 3. دالة جلب الفيديوهات من XVideos
 async function fetchAndSendVideos(sender_psid, page = 1) {
     try {
-        const targetUrl = `https://www.pornhub.com/video/search?search=new&page=${page}`;
-        const scraperApiUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}&keep_headers=true`;
+        // في موقع XVideos الصفحة الأولى تبدأ من 0
+        let pageIndex = page - 1;
+        const targetUrl = `https://www.xvideos.com/new/${pageIndex}`;
+        
+        // نستخدم ScraperAPI لجلب الـ HTML فقط لضمان عدم حظر الـ IP الخاص بنا
+        const scraperApiUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}`;
         
         const response = await axios.get(scraperApiUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Cookie': 'age_verified=1; bs=1; platform=pc;' 
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
             }
         });
 
         const $ = cheerio.load(response.data);
         let elements = [];
-        let videoElements = $('.pcVideoListItem').toArray();
+        let videoElements = $('.thumb-block').toArray(); // كلاس الفيديوهات في XVideos
 
         for (let i = 0; i < videoElements.length; i++) {
             if (elements.length >= 9) break; 
 
             let element = videoElements[i];
-            let title = $(element).find('.title a').text().trim();
+            // استخراج العنوان
+            let title = $(element).find('.title a').attr('title') || $(element).find('.title a').text().trim();
+            // استخراج الرابط
             let link = $(element).find('.title a').attr('href');
-            
-            let imgUrl = $(element).find('img').attr('data-image') || 
-                         $(element).find('img').attr('data-mediumthumb') || 
-                         $(element).find('img').attr('data-thumb_url') || 
-                         $(element).find('img').attr('src');
-            
+            // استخراج الصورة
+            let imgUrl = $(element).find('.thumb img').attr('data-src') || $(element).find('.thumb img').attr('src');
+            // استخراج المدة
             let duration = $(element).find('.duration').text().trim();
 
-            if (title && link && link.includes('viewkey') && imgUrl && !imgUrl.startsWith('data:image')) {
-                let fullLink = 'https://www.pornhub.com' + link;
+            if (title && link && imgUrl) {
+                let fullLink = link.startsWith('http') ? link : 'https://www.xvideos.com' + link;
                 let subtitleText = "اضغط لتحميل هذا الفيديو";
                 if (duration) subtitleText = `المدة: ${duration} ⏱️ | ` + subtitleText;
 
@@ -145,7 +144,7 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
 
             await sendCarouselMessage(sender_psid, elements);
         } else {
-            await sendTextMessage(sender_psid, "لم أتمكن من العثور على فيديوهات، يبدو أن الموقع يعرض محتوى فارغ.");
+            await sendTextMessage(sender_psid, "لم أتمكن من العثور على فيديوهات في هذه الصفحة.");
         }
 
     } catch (error) {
@@ -155,24 +154,23 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
     }
 }
 
-// 4. دالة استخراج وتحميل وإرسال الفيديو (النسخة الحاسمة عبر yt-dlp مباشرة مع الفول باك)
+// 4. دالة استخراج وتحميل وإرسال الفيديو
 async function downloadAndSendVideo(sender_psid, videoUrl) {
     let filePath = '';
     try {
-        await sendTextMessage(sender_psid, "⏳ جاري استخراج وتحميل الفيديو عبر السيرفر، قد يستغرق الأمر بضع ثوانٍ...");
+        await sendTextMessage(sender_psid, "⏳ جاري تحميل الفيديو في السيرفر، يرجى الانتظار...");
 
-        const proxyUrl = `http://scraperapi:${SCRAPER_API_KEY}@proxy-server.scraperapi.com:8001`;
         filePath = path.join('/tmp', `video_${Date.now()}.mp4`);
         
-        // استخدام الأداة للتحميل المباشر مع ميزة المحاولة بصيغ أخرى عند الفشل وتخطي m3u8
+        // هنا قمنا بإزالة البروكسي! yt-dlp سيتصل مباشرة من سيرفر Fly.io 
+        // هذا سيلغي خطأ 400 الذي سببه ScraperAPI
         await youtubedl(videoUrl, {
-            proxy: proxyUrl,
-            format: 'worst[protocol^=http][ext=mp4]/worst[ext=mp4]/worst', // إضافة المحاولة بصيغ بديلة لتجنب الفشل
+            format: 'worst[ext=mp4]/worst', // أخذ أقل جودة لكي لا يتجاوز 25MB
             noCheckCertificate: true,
             output: filePath
         });
 
-        await sendTextMessage(sender_psid, "🚀 اكتمل التحميل في السيرفر بنجاح! جاري رفعه إلى ماسنجر...");
+        await sendTextMessage(sender_psid, "🚀 اكتمل التحميل! جاري رفعه إلى ماسنجر الآن...");
 
         const form = new FormData();
         form.append('recipient', JSON.stringify({ id: sender_psid }));
@@ -203,7 +201,7 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
         
         if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
-        await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء التحميل. يرجى المحاولة في فيديو آخر.");
+        await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء التحميل. يرجى المحاولة مرة أخرى.");
     }
 }
 
