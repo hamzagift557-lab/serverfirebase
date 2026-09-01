@@ -2,7 +2,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const youtubedl = require('youtube-dl-exec'); // أبقيناها لوقت الحاجة مستقبلاً
+const youtubedl = require('youtube-dl-exec'); 
 const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
@@ -146,21 +146,18 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
     }
 }
 
-// 4. دالة استخراج وتحميل وإرسال الفيديو (الخطة النهائية القاطعة)
+// 4. دالة استخراج وتحميل وإرسال الفيديو
 async function downloadAndSendVideo(sender_psid, videoUrl) {
     let filePath = '';
     try {
         await sendTextMessage(sender_psid, "⏳ جاري استخراج رابط الفيديو المباشر من الموقع...");
 
-        // 1. فتح صفحة الفيديو عبر ScraperAPI لتخطي الحظر
         const scraperApiUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(videoUrl)}`;
         const htmlResponse = await axios.get(scraperApiUrl);
         const html = htmlResponse.data;
 
-        // 2. البحث عن رابط الجودة المنخفضة المخفي في السورس كود (لكي يناسب 25 ميجا الخاصة بفيسبوك)
         let match = html.match(/setVideoUrlLow\('([^']+)'\)/);
         if (!match || !match[1]) {
-            // إن لم يجد الجودة المنخفضة، يبحث عن الجودة العالية كبديل
             match = html.match(/setVideoUrlHigh\('([^']+)'\)/);
         }
 
@@ -169,9 +166,8 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
         }
 
         const directUrl = match[1];
-        await sendTextMessage(sender_psid, "📥 تم الاستخراج بنجاح! جاري تحميل الفيديو للسيرفر (بدون أداة)...");
+        await sendTextMessage(sender_psid, "📥 تم الاستخراج بنجاح! جاري تحميل الفيديو للسيرفر لفحص حجمه...");
 
-        // 3. التحميل المباشر للفيديو إلى السيرفر
         filePath = path.join('/tmp', `video_${Date.now()}.mp4`);
         const writer = fs.createWriteStream(filePath);
         
@@ -179,7 +175,7 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
             url: directUrl,
             method: 'GET',
             responseType: 'stream',
-            httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false }) // لتخطي مشكلة الشهادات
+            httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false }) 
         });
 
         downloadResponse.data.pipe(writer);
@@ -189,9 +185,23 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
             writer.on('error', reject);
         });
 
-        await sendTextMessage(sender_psid, "🚀 اكتمل التحميل! جاري رفعه إلى ماسنجر الآن...");
+        // فحص حجم الملف بعد اكتمال التحميل
+        const stats = fs.statSync(filePath);
+        const fileSizeInMB = stats.size / (1024 * 1024);
 
-        // 4. الرفع إلى فيسبوك
+        if (fileSizeInMB > 24.5) {
+            console.log(`⚠️ حجم الفيديو (${fileSizeInMB.toFixed(2)} MB) كبير جداً لفيسبوك.`);
+            
+            // إرسال الرابط المباشر للمستخدم
+            await sendTextMessage(sender_psid, `⚠️ عذراً، حجم الفيديو (${fileSizeInMB.toFixed(1)} MB) يتجاوز الحد المسموح به في ماسنجر (25 MB).\n\n🔗 لكن يمكنك مشاهدته أو تحميله مباشرة بضغطة زر عبر الرابط التالي:\n\n${directUrl}`);
+            
+            // مسح الملف فوراً لأنه لن يُرسل
+            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+            return; // إيقاف الدالة هنا لكي لا يحاول إرساله
+        }
+
+        await sendTextMessage(sender_psid, `🚀 حجم الفيديو مناسب (${fileSizeInMB.toFixed(1)} MB)! جاري رفعه إلى ماسنجر الآن...`);
+
         const form = new FormData();
         form.append('recipient', JSON.stringify({ id: sender_psid }));
         form.append('message', JSON.stringify({
@@ -210,7 +220,6 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
 
         console.log("✅ تم إرسال الفيديو للمستخدم بنجاح!");
 
-        // 5. مسح الفيديو من السيرفر
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
     } catch (error) {
@@ -222,7 +231,7 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
         
         if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
-        await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء التحميل. قد يكون حجم الفيديو أكبر من 25MB (الحد الأقصى لفيسبوك).");
+        await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء التحميل. يرجى المحاولة في فيديو آخر.");
     }
 }
 
