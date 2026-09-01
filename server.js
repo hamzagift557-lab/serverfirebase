@@ -22,7 +22,7 @@ const SCRAPER_API_KEY = "e52e3ecb8172c130934a150b2e7c5f22";
 
 // ⚠️ إعدادات Cloudinary (تأكد من وضع اسم السحابة الخاص بك هنا)
 cloudinary.config({
-    cloud_name: 'ضع_اسم_السحابة_هنا', 
+    cloud_name: 'xws2ntkz', 
     api_key: '213177591356185',
     api_secret: 'nLpOmLqmUFo5jAFajWNVUFJ5jxo'
 });
