@@ -2,6 +2,10 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const cheerio = require('cheerio');
+const youtubedl = require('youtube-dl-exec');
+const FormData = require('form-data');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(bodyParser.json());
@@ -33,51 +37,50 @@ app.get('/webhook', (req, res) => {
 });
 
 // 2. مسار استقبال الرسائل (POST)
-app.post('/webhook', async (req, res) => {
-    try {
-        let body = req.body;
+app.post('/webhook', (req, res) => {
+    let body = req.body;
 
-        if (body.object === 'page') {
-            for (const entry of body.entry) {
-                let webhook_event = entry.messaging[0];
-                let sender_psid = webhook_event.sender.id;
+    if (body.object === 'page') {
+        // إرسال الرد فوراً لفيسبوك لتجنب إعادة إرسال الرسالة أثناء التحميل الطويل
+        res.status(200).send('EVENT_RECEIVED');
 
+        body.entry.forEach(async function(entry) {
+            let webhook_event = entry.messaging[0];
+            let sender_psid = webhook_event.sender.id;
+
+            try {
                 if (webhook_event.message && webhook_event.message.text) {
-                    console.log(`📩 استلام رسالة من ${sender_psid}، جاري جلب الفيديوهات عبر ScraperAPI...`);
-                    await fetchAndSendVideos(sender_psid);
+                    console.log(`📩 استلام رسالة من ${sender_psid}، جاري جلب الفيديوهات...`);
+                    await fetchAndSendVideos(sender_psid, 1);
                 } 
                 else if (webhook_event.postback) {
                     let payload = webhook_event.postback.payload;
                     console.log(`🔘 تم الضغط على زر: ${payload}`);
                     
                     if (payload.startsWith('LOAD_MORE_')) {
-                        await sendTextMessage(sender_psid, "ميزة المزيد قيد التحديث.");
+                        let nextPage = parseInt(payload.split('_')[2]);
+                        await fetchAndSendVideos(sender_psid, nextPage);
                     } else {
-                        await sendTextMessage(sender_psid, `تم اختيار الفيديو! جارٍ تجهيز الرابط للخطوة القادمة: \n${payload}`);
+                        // بدء عملية استخراج وتحميل الفيديو
+                        await downloadAndSendVideo(sender_psid, payload);
                     }
                 }
+            } catch (error) {
+                console.error("⚠️ حدث خطأ داخلي أثناء معالجة الحدث:");
+                console.error(error);
             }
-            res.status(200).send('EVENT_RECEIVED');
-        } else {
-            res.sendStatus(404);
-        }
-    } catch (error) {
-        console.error("⚠️ حدث خطأ داخلي أثناء معالجة الـ Webhook:");
-        console.error(error);
-        res.status(500).send('Internal Server Error');
+        });
+    } else {
+        res.sendStatus(404);
     }
 });
 
-// 3. دالة جلب الفيديوهات (Scraping) عبر ScraperAPI وإرسالها
-async function fetchAndSendVideos(sender_psid) {
+// 3. دالة جلب الفيديوهات عبر ScraperAPI (مع إصلاح الصور والمدة والمزيد)
+async function fetchAndSendVideos(sender_psid, page = 1) {
     try {
-        // الرابط الذي نريد فحصه
-        const targetUrl = `https://www.pornhub.com/video/search?search=new`;
-        
-        // بناء رابط ScraperAPI مع تفعيل خاصية keep_headers لتمرير الكوكيز
+        const targetUrl = `https://www.pornhub.com/video/search?search=new&page=${page}`;
         const scraperApiUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}&keep_headers=true`;
         
-        // إرسال الطلب عبر البروكسي المنزلي مع التنكر وتخطي العمر
         const response = await axios.get(scraperApiUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -92,19 +95,30 @@ async function fetchAndSendVideos(sender_psid) {
         let videoElements = $('.pcVideoListItem').toArray();
 
         for (let i = 0; i < videoElements.length; i++) {
-            if (elements.length >= 10) break; 
+            if (elements.length >= 9) break; // نترك العنصر العاشر لزر المزيد
 
             let element = videoElements[i];
             let title = $(element).find('.title a').text().trim();
             let link = $(element).find('.title a').attr('href');
-            let imgUrl = $(element).find('img').attr('src') || $(element).find('img').attr('data-thumb_url') || $(element).find('img').attr('data-mediumthumb');
+            
+            // إصلاح الصور: البحث في الخصائص المتعددة للـ Lazy Loading
+            let imgUrl = $(element).find('img').attr('data-image') || 
+                         $(element).find('img').attr('data-mediumthumb') || 
+                         $(element).find('img').attr('data-thumb_url') || 
+                         $(element).find('img').attr('src');
+            
+            // جلب وقت الفيديو
+            let duration = $(element).find('.duration').text().trim();
 
-            if (title && link && link.includes('viewkey') && imgUrl && !imgUrl.includes('data:image')) {
+            if (title && link && link.includes('viewkey') && imgUrl && !imgUrl.startsWith('data:image')) {
                 let fullLink = 'https://www.pornhub.com' + link;
+                let subtitleText = "اضغط لتحميل هذا الفيديو";
+                if (duration) subtitleText = `المدة: ${duration} ⏱️ | ` + subtitleText;
+
                 elements.push({
                     title: title.substring(0, 75) + "..",
                     image_url: imgUrl,
-                    subtitle: "اضغط لتحميل هذا الفيديو",
+                    subtitle: subtitleText,
                     buttons: [
                         {
                             type: "postback",
@@ -117,9 +131,24 @@ async function fetchAndSendVideos(sender_psid) {
         }
 
         if (elements.length > 0) {
+            // إضافة زر المزيد
+            let placeholderImage = elements[0].image_url; 
+            elements.push({
+                title: "المزيد من الفيديوهات 🔄",
+                image_url: placeholderImage,
+                subtitle: `الانتقال إلى الصفحة ${page + 1}`,
+                buttons: [
+                    {
+                        type: "postback",
+                        title: "عرض المزيد ➡️",
+                        payload: `LOAD_MORE_${page + 1}`
+                    }
+                ]
+            });
+
             await sendCarouselMessage(sender_psid, elements);
         } else {
-            await sendTextMessage(sender_psid, "لم أتمكن من العثور على فيديوهات، يبدو أن الموقع يعرض محتوى فارغ أو إعلانات.");
+            await sendTextMessage(sender_psid, "لم أتمكن من العثور على فيديوهات، يبدو أن الموقع يعرض محتوى فارغ.");
         }
 
     } catch (error) {
@@ -129,7 +158,81 @@ async function fetchAndSendVideos(sender_psid) {
     }
 }
 
-// 4. دالة إرسال رسالة نصية عادية
+// 4. دالة استخراج وتحميل وإرسال الفيديو
+async function downloadAndSendVideo(sender_psid, videoUrl) {
+    let filePath = '';
+    try {
+        await sendTextMessage(sender_psid, "⏳ جاري استخراج رابط الفيديو الأساسي، يرجى الانتظار...");
+
+        // استخدام بروكسي ScraperAPI لتشغيل الأداة
+        const proxyUrl = `http://scraperapi:${SCRAPER_API_KEY}@proxy-server.scraperapi.com:8001`;
+        
+        // جلب أسوأ جودة (mp4) لضمان أن الحجم أقل من 25MB لفيسبوك
+        const videoInfo = await youtubedl(videoUrl, {
+            dumpJson: true,
+            proxy: proxyUrl,
+            format: 'worst[ext=mp4]'
+        });
+
+        const directUrl = videoInfo.url;
+        await sendTextMessage(sender_psid, "📥 تم استخراج الرابط بنجاح! جاري تحميل الفيديو للسيرفر ثم إرساله لك...");
+
+        // حفظ الفيديو في مسار مؤقت
+        filePath = path.join('/tmp', `video_${Date.now()}.mp4`);
+        const writer = fs.createWriteStream(filePath);
+        
+        const downloadResponse = await axios({
+            url: directUrl,
+            method: 'GET',
+            responseType: 'stream'
+        });
+
+        downloadResponse.data.pipe(writer);
+
+        await new Promise((resolve, reject) => {
+            writer.on('finish', resolve);
+            writer.on('error', reject);
+        });
+
+        await sendTextMessage(sender_psid, "🚀 اكتمل التحميل في السيرفر، جاري رفعه إلى ماسنجر...");
+
+        // رفع الفيديو لفيسبوك باستخدام form-data
+        const form = new FormData();
+        form.append('recipient', JSON.stringify({ id: sender_psid }));
+        form.append('message', JSON.stringify({
+            attachment: {
+                type: 'video',
+                payload: { is_reusable: false }
+            }
+        }));
+        form.append('filedata', fs.createReadStream(filePath));
+
+        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, form, {
+            headers: form.getHeaders(),
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity
+        });
+
+        console.log("✅ تم إرسال الفيديو للمستخدم بنجاح!");
+
+        // حذف الفيديو لتنظيف مساحة السيرفر
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+    } catch (error) {
+        console.error("⚠️ حدث خطأ أثناء تحميل أو إرسال الفيديو:");
+        console.error(error);
+        if (error.response && error.response.data) {
+            console.error("تفاصيل رد فيسبوك: ", JSON.stringify(error.response.data, null, 2));
+        }
+        
+        // تنظيف الملف إذا فشل الإرسال
+        if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+        await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء التحميل. قد يكون حجم الفيديو أكبر من 25MB (الحد الأقصى لفيسبوك) أو أن الموقع منع التحميل.");
+    }
+}
+
+// 5. دالة إرسال رسالة نصية عادية
 async function sendTextMessage(sender_psid, text) {
     const requestBody = {
         recipient: { id: sender_psid },
@@ -138,7 +241,7 @@ async function sendTextMessage(sender_psid, text) {
     await callSendAPI(requestBody);
 }
 
-// 5. دالة إرسال القائمة (Carousel)
+// 6. دالة إرسال القائمة (Carousel)
 async function sendCarouselMessage(sender_psid, elements) {
     const requestBody = {
         recipient: { id: sender_psid },
@@ -155,11 +258,10 @@ async function sendCarouselMessage(sender_psid, elements) {
     await callSendAPI(requestBody);
 }
 
-// 6. دالة التواصل مع API فيسبوك
+// 7. دالة التواصل مع API فيسبوك
 async function callSendAPI(requestBody) {
     try {
         await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, requestBody);
-        console.log("✅ تم إرسال الرد للمستخدم بنجاح!");
     } catch (error) {
         console.error("⚠️ فشل إرسال الرد إلى فيسبوك. الخطأ الحقيقي:");
         if (error.response) {
