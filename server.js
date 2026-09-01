@@ -238,9 +238,8 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
             return;
         }
 
-        await sendTextMessage(sender_psid, `⚠️ الحجم الأصلي (${originalSizeMB.toFixed(1)} MB) كبير جداً. جاري رفعه إلى منصة Cloudinary للضغط عبر نظام الدفعات...`);
+        await sendTextMessage(sender_psid, `⚠️ الحجم الأصلي (${originalSizeMB.toFixed(1)} MB) كبير جداً. جاري رفعه إلى منصة Cloudinary للضغط...`);
 
-        // التعديل هنا: استخدام upload_large للرفع على دفعات بحجم 6 ميجا
         const uploadRes = await cloudinary.uploader.upload_large(originalPath, { 
             resource_type: "video",
             chunk_size: 6000000 
@@ -250,8 +249,10 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
 
         await sendTextMessage(sender_psid, "✅ تم الرفع بنجاح! جاري ضغط الفيديو (المحاولة الأولى: جودة 480p)... قد يستغرق الأمر دقيقة.");
 
+        // توليد رابط الضغط مع تحديد format: 'mp4' لمنع خطأ ERR_INVALID_URL
         const url1 = cloudinary.url(publicId, {
             resource_type: 'video',
+            format: 'mp4',
             transformation: [{ width: 480, crop: "scale", quality: "auto:low" }]
         });
 
@@ -270,6 +271,7 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
 
             const url2 = cloudinary.url(publicId, {
                 resource_type: 'video',
+                format: 'mp4',
                 transformation: [{ width: 320, crop: "scale", bit_rate: "250k" }]
             });
 
