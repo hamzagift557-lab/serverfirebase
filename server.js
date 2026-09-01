@@ -6,7 +6,7 @@ const youtubedl = require('youtube-dl-exec');
 const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
-const cloudinary = require('cloudinary').v2;
+const crypto = require('crypto');
 
 const app = express();
 app.use(bodyParser.json());
@@ -20,12 +20,9 @@ const PAGE_ACCESS_TOKEN = "EAAG5a8VWw5IBSQsr4ZBce4wv6ZAL8q5xGe0eHaVMZB0mp1KpdPOw
 // مفتاح ScraperAPI الخاص بك
 const SCRAPER_API_KEY = "e52e3ecb8172c130934a150b2e7c5f22";
 
-// إعدادات Cloudinary
-cloudinary.config({
-    cloud_name: 'xws2ntkz', 
-    api_key: '213177591356185',
-    api_secret: 'nLpOmLqmUFo5jAFajWNVUFJ5jxo'
-});
+// إعدادات Transloadit
+const TRANSLOADIT_AUTH_KEY = "7be965b5e5cd22f6023a9ccb2b63d34a";
+const TRANSLOADIT_AUTH_SECRET = "A8f2ea8c251d4b5daef805ec3086a2ee";
 
 // 1. مسار التحقق (GET)
 app.get('/webhook', (req, res) => {
@@ -153,9 +150,8 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
         }
 
     } catch (error) {
-        console.error("⚠️ حدث خطأ أثناء عملية السكرابنج أو التحليل:");
-        console.error(error);
-        await sendTextMessage(sender_psid, "حدث خطأ أثناء جلب الفيديوهات من الموقع.");
+        console.error("⚠️ حدث خطأ أثناء عملية السكرابنج أو التحليل الحقيقي:", error.message || error);
+        await sendTextMessage(sender_psid, `حدث خطأ أثناء جلب الفيديوهات من الموقع: ${error.message || error}`);
     }
 }
 
@@ -204,33 +200,27 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
         }
 
         if (buttons.length > 0) {
-            await sendButtonMessage(sender_psid, "✅ تم العثور على الجودات التالية (البوت سيضغط الفيديو إذا كان أكبر من 25M):", buttons);
+            await sendButtonMessage(sender_psid, "✅ تم العثور على الجودات التالية (البوت سيضغط الفيديو عبر Transloadit إذا تجاوز 25M):", buttons);
         } else {
             await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء قراءة أحجام الفيديو.");
         }
 
     } catch (error) {
-        console.error("⚠️ حدث خطأ أثناء فحص الجودات:");
-        console.error(error);
-        await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء الاتصال بالموقع لمعرفة الجودات.");
+        console.error("⚠️ حدث خطأ أثناء فحص الجودات الحقيقي:", error.message || error);
+        await sendTextMessage(sender_psid, `❌ حدث خطأ أثناء الاتصال بالموقع لمعرفة الجودات: ${error.message || error}`);
     }
 }
 
-// 5. محرك التحميل والضغط الذكي (Cloudinary)
+// 5. محرك التحميل والضغط عبر Transloadit
 async function downloadAndCompressVideo(sender_psid, directUrl) {
     let originalPath = '';
     let compressedPath = '';
-    let publicId = '';
 
     try {
         await sendTextMessage(sender_psid, "📥 جاري تحميل الفيديو الأصلي للسيرفر...");
 
         originalPath = path.join('/tmp', `orig_${Date.now()}.mp4`);
         await downloadFileLocally(directUrl, originalPath);
-
-        if (!fs.existsSync(originalPath)) {
-            throw new Error("فشل حفظ الفيديو المحلي على السيرفر.");
-        }
 
         const stats = fs.statSync(originalPath);
         const originalSizeMB = stats.size / (1024 * 1024);
@@ -242,81 +232,82 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
             return;
         }
 
-        await sendTextMessage(sender_psid, `⚠️ الحجم الأصلي (${originalSizeMB.toFixed(1)} MB) كبير جداً. جاري رفعه إلى منصة Cloudinary للضغط...`);
+        await sendTextMessage(sender_psid, `⚠️ الحجم الأصلي (${originalSizeMB.toFixed(1)} MB) كبير جداً. جاري إرساله إلى Transloadit للضغط...`);
 
-        // استخدام الرفع القياسي المستقر مع تفعيل المهلة الطويلة
-        const uploadRes = await cloudinary.uploader.upload(originalPath, { 
-            resource_type: "video",
-            timeout: 120000 
+        // تجهيز خطوات Transloadit لضغط الفيديو
+        const params = {
+            auth_key: TRANSLOADIT_AUTH_KEY,
+            steps: {
+                ":original": {
+                    robot: "/file/upload"
+                },
+                "compressed": {
+                    use: ":original",
+                    robot: "/video/encode",
+                    preset: "ipad-low",
+                    width: 480,
+                    bitrate: "300k"
+                }
+            }
+        };
+
+        const paramsString = JSON.stringify(params);
+        const signature = crypto.createHmac('sha1', TRANSLOADIT_AUTH_SECRET)
+                                .update(paramsString)
+                                .digest('hex');
+
+        const form = new FormData();
+        form.append('params', paramsString);
+        form.append('auth_signature', signature);
+        form.append('file', fs.createReadStream(originalPath));
+
+        // طلب الضغط مع تفعيل الانتظار (wait=true) ليعود بالنتيجة فور انتهائها
+        const transloaditRes = await axios.post('https://api2.transloadit.com/assemblies?wait=true', form, {
+            headers: form.getHeaders(),
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+            timeout: 300000
         });
-        
-        publicId = uploadRes.public_id;
-        if (!publicId) {
-            throw new Error("فشل الحصول على public_id من Cloudinary بشكل قاطع.");
+
+        const assemblyData = transloaditRes.data;
+        if (assemblyData.ok !== 'ASSEMBLY_COMPLETED') {
+            throw new Error(`فشلت عملية المعالجة في Transloadit: ${assemblyData.message || assemblyData.error}`);
         }
 
-        await sendTextMessage(sender_psid, "✅ تم الرفع بنجاح! جاري ضغط الفيديو (المحاولة الأولى: جودة 480p)... قد يستغرق الأمر دقيقة.");
+        // استخراج رابط الفيديو المضغوط الناتج
+        const compressedResults = assemblyData.results['compressed'];
+        if (!compressedResults || compressedResults.length === 0) {
+            throw new Error("لم يتم العثور على مخرجات الفيديو المضغوط في رد Transloadit.");
+        }
 
-        const url1 = cloudinary.url(publicId, {
-            resource_type: 'video',
-            format: 'mp4',
-            transformation: [{ width: 480, crop: "scale", quality: "auto:low" }]
-        });
+        const compressedUrl = compressedResults[0].ssl_url || compressedResults[0].url;
+
+        await sendTextMessage(sender_psid, "✅ تم الضغط بنجاح عبر Transloadit! جاري جلب الفيديو المضغوط للسيرفر وإرساله...");
 
         compressedPath = path.join('/tmp', `comp_${Date.now()}.mp4`);
-        await downloadFileLocally(url1, compressedPath);
+        await downloadFileLocally(compressedUrl, compressedPath);
 
-        if (!fs.existsSync(compressedPath)) {
-            throw new Error("فشل تحميل الفيديو المضغوط من Cloudinary.");
-        }
-
-        let compStats = fs.statSync(compressedPath);
-        let compSizeMB = compStats.size / (1024 * 1024);
+        const compStats = fs.statSync(compressedPath);
+        const compSizeMB = compStats.size / (1024 * 1024);
 
         if (compSizeMB <= 24.5) {
-            await sendTextMessage(sender_psid, `🚀 نجح الضغط الأول! الحجم أصبح (${compSizeMB.toFixed(1)} MB). جاري إرساله لماسنجر...`);
+            await sendTextMessage(sender_psid, `🚀 الحجم بعد الضغط أصبح (${compSizeMB.toFixed(1)} MB)! جاري إرساله لماسنجر...`);
             await uploadVideoToFacebook(sender_psid, compressedPath);
         } else {
-            await sendTextMessage(sender_psid, `⚠️ المحاولة الأولى لم تكن كافية (${compSizeMB.toFixed(1)} MB). جاري الضغط بأقصى قوة (المحاولة الثانية: 320p)...`);
-            if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
-
-            const url2 = cloudinary.url(publicId, {
-                resource_type: 'video',
-                format: 'mp4',
-                transformation: [{ width: 320, crop: "scale", bit_rate: "250k" }]
-            });
-
-            await downloadFileLocally(url2, compressedPath);
-
-            if (!fs.existsSync(compressedPath)) {
-                throw new Error("فشل تحميل الفيديو المضغوط (المحاولة الثانية) من Cloudinary.");
-            }
-
-            compStats = fs.statSync(compressedPath);
-            compSizeMB = compStats.size / (1024 * 1024);
-
-            if (compSizeMB <= 24.5) {
-                await sendTextMessage(sender_psid, `🚀 نجح الضغط الأقصى! الحجم أصبح (${compSizeMB.toFixed(1)} MB). جاري إرساله لماسنجر...`);
-                await uploadVideoToFacebook(sender_psid, compressedPath);
-            } else {
-                await sendTextMessage(sender_psid, `❌ للأسف، حتى بعد أقصى ضغط بقي الحجم (${compSizeMB.toFixed(1)} MB) متجاوزاً 25MB.\n\n🔗 يمكنك التحميل عبر الرابط المباشر:\n${directUrl}`);
-            }
+            await sendTextMessage(sender_psid, `⚠️ حتى بعد الضغط بقي الحجم (${compSizeMB.toFixed(1)} MB) متجاوزاً 25MB.\n\n🔗 يمكنك التحميل عبر الرابط المباشر:\n${directUrl}`);
         }
 
-        await cloudinary.uploader.destroy(publicId, { resource_type: 'video' });
-        if (originalPath && fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
-        if (compressedPath && fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
+        if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
+        if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
 
     } catch (error) {
-        console.error("⚠️ حدث خطأ أثناء نظام الضغط:");
-        console.error(error);
-        if (error.response && error.response.data) console.error(error.response.data);
+        console.error("⚠️ حدث خطأ أثناء نظام الضغط الحقيقي:", error.response?.data || error.message || error);
         
-        if (publicId) { try { await cloudinary.uploader.destroy(publicId, { resource_type: 'video' }); } catch(e){} }
         if (originalPath && fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
         if (compressedPath && fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
 
-        await sendTextMessage(sender_psid, `❌ خطأ تقني حقيقي: ${error.message || error}`);
+        const detailedError = error.response?.data ? JSON.stringify(error.response.data) : (error.message || error);
+        await sendTextMessage(sender_psid, `❌ خطأ حقيقي أثناء معالجة وضغط الفيديو:\n${detailedError}`);
     }
 }
 
@@ -382,7 +373,7 @@ async function callSendAPI(requestBody) {
     try {
         await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, requestBody);
     } catch (error) {
-        console.error("⚠️ فشل إرسال الرد إلى فيسبوك الداخلي.");
+        console.error("⚠️ فشل إرسال الرد إلى فيسبوك الداخلي:", error.response?.data || error.message);
     }
 }
 
