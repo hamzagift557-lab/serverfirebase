@@ -60,12 +60,10 @@ app.post('/webhook', (req, res) => {
                         let nextPage = parseInt(payload.split('_')[2]);
                         await fetchAndSendVideos(sender_psid, nextPage);
                     } 
-                    // إذا ضغط على إحدى الجودات لتحميلها
                     else if (payload.startsWith('DOWNLOAD_VIDEO|')) {
                         let directUrl = payload.split('|')[1];
                         await downloadAndSendVideo(sender_psid, directUrl);
                     } 
-                    // إذا ضغط على "اختيار للتحميل" من القائمة الرئيسية، نقوم بفحص الجودات
                     else {
                         await fetchQualitiesAndSendOptions(sender_psid, payload);
                     }
@@ -153,7 +151,7 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
     }
 }
 
-// 4. الدالة الجديدة: فحص الجودات والأحجام وإرسال الأزرار
+// 4. الدالة المحدثة: فحص الجودات وتجنب التكرار
 async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
     try {
         await sendTextMessage(sender_psid, "⏳ جاري فحص الجودات والأحجام المتاحة لهذا الفيديو...");
@@ -164,16 +162,23 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
 
         let qualities = [];
 
-        // استخراج الجودة المنخفضة
+        // استخراج الرابط المنخفض والعالي
         let matchLow = html.match(/setVideoUrlLow\('([^']+)'\)/);
-        if (matchLow && matchLow[1]) {
-            qualities.push({ label: "منخفضة", url: matchLow[1] });
+        let matchHigh = html.match(/setVideoUrlHigh\('([^']+)'\)/);
+
+        let urlLow = matchLow && matchLow[1] ? matchLow[1] : null;
+        let urlHigh = matchHigh && matchHigh[1] ? matchHigh[1] : null;
+
+        // إضافة الجودة المنخفضة إن وجدت
+        if (urlLow) {
+            qualities.push({ label: "منخفضة", url: urlLow });
         }
 
-        // استخراج الجودة العالية
-        let matchHigh = html.match(/setVideoUrlHigh\('([^']+)'\)/);
-        if (matchHigh && matchHigh[1]) {
-            qualities.push({ label: "عالية", url: matchHigh[1] });
+        // بفضل هذا الشرط: لن تتم إضافة الجودة العالية إذا كانت مطابقة تماماً للمنخفضة
+        if (urlHigh && urlHigh !== urlLow) {
+            qualities.push({ label: "عالية", url: urlHigh });
+        } else if (urlHigh && !urlLow) {
+            qualities.push({ label: "عالية", url: urlHigh });
         }
 
         if (qualities.length === 0) {
@@ -183,7 +188,6 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
 
         let buttons = [];
         
-        // فحص حجم كل جودة عبر طلب HEAD سريع جداً
         for (let q of qualities) {
             try {
                 const headRes = await axios.head(q.url, {
@@ -193,21 +197,18 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
                 let sizeBytes = headRes.headers['content-length'];
                 let sizeMB = sizeBytes ? (sizeBytes / (1024 * 1024)).toFixed(1) : "?";
                 
-                // إضافة الزر (يجب ألا يتجاوز العنوان 20 حرفاً بسبب قيود فيسبوك)
                 buttons.push({
                     type: "postback",
-                    title: `📥${q.label}(${sizeMB}M)`,
+                    title: `📥 ${q.label} (${sizeMB}M)`,
                     payload: `DOWNLOAD_VIDEO|${q.url}`
                 });
             } catch (e) {
                 console.error(`⚠️ فشل جلب حجم الجودة الـ ${q.label}:`);
-                console.error(e);
             }
         }
 
         if (buttons.length > 0) {
-            // إرسال رسالة الأزرار للمستخدم
-            await sendButtonMessage(sender_psid, "✅ تم العثور على الجودات التالية، اختر الأنسب لك (فيسبوك يقبل حتى 25M فقط):", buttons);
+            await sendButtonMessage(sender_psid, "✅ تم العثور على الجودات التالية (تذكر الحد الأقصى 25M):", buttons);
         } else {
             await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء قراءة أحجام الفيديو.");
         }
@@ -219,7 +220,7 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
     }
 }
 
-// 5. دالة التحميل والإرسال (محدثة لاستقبال الرابط المباشر فقط)
+// 5. دالة التحميل والإرسال
 async function downloadAndSendVideo(sender_psid, directUrl) {
     let filePath = '';
     try {
@@ -242,7 +243,6 @@ async function downloadAndSendVideo(sender_psid, directUrl) {
             writer.on('error', reject);
         });
 
-        // فحص حجم الملف بعد اكتمال التحميل
         const stats = fs.statSync(filePath);
         const fileSizeInMB = stats.size / (1024 * 1024);
 
@@ -298,7 +298,7 @@ async function sendTextMessage(sender_psid, text) {
     await callSendAPI(requestBody);
 }
 
-// 7. دالة إرسال رسالة بأزرار (Button Template)
+// 7. دالة إرسال رسالة بأزرار
 async function sendButtonMessage(sender_psid, text, buttons) {
     const requestBody = {
         recipient: { id: sender_psid },
