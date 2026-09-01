@@ -155,7 +155,7 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
     }
 }
 
-// 4. دالة استخراج وتحميل وإرسال الفيديو (النسخة الحاسمة عبر yt-dlp مباشرة)
+// 4. دالة استخراج وتحميل وإرسال الفيديو (النسخة الحاسمة عبر yt-dlp مباشرة مع الفول باك)
 async function downloadAndSendVideo(sender_psid, videoUrl) {
     let filePath = '';
     try {
@@ -164,10 +164,10 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
         const proxyUrl = `http://scraperapi:${SCRAPER_API_KEY}@proxy-server.scraperapi.com:8001`;
         filePath = path.join('/tmp', `video_${Date.now()}.mp4`);
         
-        // استخدام الأداة للتحميل المباشر إلى الملف، وتخطي مشاكل الـ IP والـ SSL تماماً
+        // استخدام الأداة للتحميل المباشر مع ميزة المحاولة بصيغ أخرى عند الفشل وتخطي m3u8
         await youtubedl(videoUrl, {
             proxy: proxyUrl,
-            format: 'worst[ext=mp4]',
+            format: 'worst[protocol^=http][ext=mp4]/worst[ext=mp4]/worst', // إضافة المحاولة بصيغ بديلة لتجنب الفشل
             noCheckCertificate: true,
             output: filePath
         });
