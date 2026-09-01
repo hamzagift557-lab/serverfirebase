@@ -150,7 +150,7 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
         }
 
     } catch (error) {
-        console.error("⚠️ حدث خطأ أثناء عملية السكرابنج أو التحليل الحقيقي:", error.message || error);
+        console.error("⚠️ حدث خطأ أثناء عملية السكرابنج أو التحليل:", error.message || error);
         await sendTextMessage(sender_psid, `حدث خطأ أثناء جلب الفيديوهات من الموقع: ${error.message || error}`);
     }
 }
@@ -206,7 +206,7 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
         }
 
     } catch (error) {
-        console.error("⚠️ حدث خطأ أثناء فحص الجودات الحقيقي:", error.message || error);
+        console.error("⚠️ حدث خطأ أثناء فحص الجودات:", error.message || error);
         await sendTextMessage(sender_psid, `❌ حدث خطأ أثناء الاتصال بالموقع لمعرفة الجودات: ${error.message || error}`);
     }
 }
@@ -234,9 +234,11 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
 
         await sendTextMessage(sender_psid, `⚠️ الحجم الأصلي (${originalSizeMB.toFixed(1)} MB) كبير جداً. جاري إرساله إلى Transloadit للضغط...`);
 
-        // تجهيز خطوات Transloadit لضغط الفيديو
+        // التصحيح: وضع المفتاح داخل كائن auth حسب متطلبات Transloadit الرسمية
         const params = {
-            auth_key: TRANSLOADIT_AUTH_KEY,
+            auth: {
+                key: TRANSLOADIT_AUTH_KEY
+            },
             steps: {
                 ":original": {
                     robot: "/file/upload"
@@ -252,16 +254,11 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
         };
 
         const paramsString = JSON.stringify(params);
-        const signature = crypto.createHmac('sha1', TRANSLOADIT_AUTH_SECRET)
-                                .update(paramsString)
-                                .digest('hex');
 
         const form = new FormData();
         form.append('params', paramsString);
-        form.append('auth_signature', signature);
         form.append('file', fs.createReadStream(originalPath));
 
-        // طلب الضغط مع تفعيل الانتظار (wait=true) ليعود بالنتيجة فور انتهائها
         const transloaditRes = await axios.post('https://api2.transloadit.com/assemblies?wait=true', form, {
             headers: form.getHeaders(),
             maxContentLength: Infinity,
@@ -274,7 +271,6 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
             throw new Error(`فشلت عملية المعالجة في Transloadit: ${assemblyData.message || assemblyData.error}`);
         }
 
-        // استخراج رابط الفيديو المضغوط الناتج
         const compressedResults = assemblyData.results['compressed'];
         if (!compressedResults || compressedResults.length === 0) {
             throw new Error("لم يتم العثور على مخرجات الفيديو المضغوط في رد Transloadit.");
@@ -301,13 +297,13 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
         if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
 
     } catch (error) {
-        console.error("⚠️ حدث خطأ أثناء نظام الضغط الحقيقي:", error.response?.data || error.message || error);
+        console.error("⚠️ حدث خطأ أثناء نظام الضغط:", error.response?.data || error.message || error);
         
         if (originalPath && fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
         if (compressedPath && fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
 
         const detailedError = error.response?.data ? JSON.stringify(error.response.data) : (error.message || error);
-        await sendTextMessage(sender_psid, `❌ خطأ حقيقي أثناء معالجة وضغط الفيديو:\n${detailedError}`);
+        await sendTextMessage(sender_psid, `❌ خطأ أثناء معالجة وضغط الفيديو:\n${detailedError}`);
     }
 }
 
