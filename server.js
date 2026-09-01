@@ -246,15 +246,12 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
         });
         
         publicId = uploadRes.public_id;
+        const originalSecureUrl = uploadRes.secure_url;
 
         await sendTextMessage(sender_psid, "✅ تم الرفع بنجاح! جاري ضغط الفيديو (المحاولة الأولى: جودة 480p)... قد يستغرق الأمر دقيقة.");
 
-        // توليد رابط الضغط مع تحديد format: 'mp4' لمنع خطأ ERR_INVALID_URL
-        const url1 = cloudinary.url(publicId, {
-            resource_type: 'video',
-            format: 'mp4',
-            transformation: [{ width: 480, crop: "scale", quality: "auto:low" }]
-        });
+        // المحاولة الأولى: تعديل الرابط الآمن المباشر لتطبيق الضغط
+        const url1 = originalSecureUrl.replace('/upload/', '/upload/w_480,c_scale,q_auto:low/');
 
         compressedPath = path.join('/tmp', `comp_${Date.now()}.mp4`);
         await downloadFileLocally(url1, compressedPath);
@@ -269,11 +266,8 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
             await sendTextMessage(sender_psid, `⚠️ المحاولة الأولى لم تكن كافية (${compSizeMB.toFixed(1)} MB). جاري الضغط بأقصى قوة (المحاولة الثانية: 320p)...`);
             if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
 
-            const url2 = cloudinary.url(publicId, {
-                resource_type: 'video',
-                format: 'mp4',
-                transformation: [{ width: 320, crop: "scale", bit_rate: "250k" }]
-            });
+            // المحاولة الثانية: ضغط أعلى بقوة
+            const url2 = originalSecureUrl.replace('/upload/', '/upload/w_320,c_scale,br_250k/');
 
             await downloadFileLocally(url2, compressedPath);
             compStats = fs.statSync(compressedPath);
