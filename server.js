@@ -158,8 +158,7 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
     }
 }
 
-// 4. دالة استخراج وتحميل وإرسال الفيديو
-async function 
+
 
 
 // 4. دالة استخراج وتحميل وإرسال الفيديو (محدثة لتخطي فحص الأمان SSL)
