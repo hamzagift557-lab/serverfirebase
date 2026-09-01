@@ -228,6 +228,10 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
         originalPath = path.join('/tmp', `orig_${Date.now()}.mp4`);
         await downloadFileLocally(directUrl, originalPath);
 
+        if (!fs.existsSync(originalPath)) {
+            throw new Error("فشل حفظ الفيديو المحلي على السيرفر.");
+        }
+
         const stats = fs.statSync(originalPath);
         const originalSizeMB = stats.size / (1024 * 1024);
 
@@ -240,19 +244,19 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
 
         await sendTextMessage(sender_psid, `⚠️ الحجم الأصلي (${originalSizeMB.toFixed(1)} MB) كبير جداً. جاري رفعه إلى منصة Cloudinary للضغط...`);
 
-        const uploadRes = await cloudinary.uploader.upload_large(originalPath, { 
+        // استخدام الرفع القياسي المستقر مع تفعيل المهلة الطويلة
+        const uploadRes = await cloudinary.uploader.upload(originalPath, { 
             resource_type: "video",
-            chunk_size: 6000000 
+            timeout: 120000 
         });
         
         publicId = uploadRes.public_id;
         if (!publicId) {
-            throw new Error("فشل الحصول على public_id من Cloudinary");
+            throw new Error("فشل الحصول على public_id من Cloudinary بشكل قاطع.");
         }
 
         await sendTextMessage(sender_psid, "✅ تم الرفع بنجاح! جاري ضغط الفيديو (المحاولة الأولى: جودة 480p)... قد يستغرق الأمر دقيقة.");
 
-        // المحاولة الأولى: استخدام دالة cloudinary.url بشكل آمن وصحيح
         const url1 = cloudinary.url(publicId, {
             resource_type: 'video',
             format: 'mp4',
@@ -261,6 +265,10 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
 
         compressedPath = path.join('/tmp', `comp_${Date.now()}.mp4`);
         await downloadFileLocally(url1, compressedPath);
+
+        if (!fs.existsSync(compressedPath)) {
+            throw new Error("فشل تحميل الفيديو المضغوط من Cloudinary.");
+        }
 
         let compStats = fs.statSync(compressedPath);
         let compSizeMB = compStats.size / (1024 * 1024);
@@ -272,7 +280,6 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
             await sendTextMessage(sender_psid, `⚠️ المحاولة الأولى لم تكن كافية (${compSizeMB.toFixed(1)} MB). جاري الضغط بأقصى قوة (المحاولة الثانية: 320p)...`);
             if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
 
-            // المحاولة الثانية: ضغط أعلى بقوة باستخدام cloudinary.url
             const url2 = cloudinary.url(publicId, {
                 resource_type: 'video',
                 format: 'mp4',
@@ -280,6 +287,11 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
             });
 
             await downloadFileLocally(url2, compressedPath);
+
+            if (!fs.existsSync(compressedPath)) {
+                throw new Error("فشل تحميل الفيديو المضغوط (المحاولة الثانية) من Cloudinary.");
+            }
+
             compStats = fs.statSync(compressedPath);
             compSizeMB = compStats.size / (1024 * 1024);
 
@@ -292,8 +304,8 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
         }
 
         await cloudinary.uploader.destroy(publicId, { resource_type: 'video' });
-        if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
-        if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
+        if (originalPath && fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
+        if (compressedPath && fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
 
     } catch (error) {
         console.error("⚠️ حدث خطأ أثناء نظام الضغط:");
@@ -301,10 +313,10 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
         if (error.response && error.response.data) console.error(error.response.data);
         
         if (publicId) { try { await cloudinary.uploader.destroy(publicId, { resource_type: 'video' }); } catch(e){} }
-        if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
-        if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
+        if (originalPath && fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
+        if (compressedPath && fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
 
-        await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء عملية الضغط أو الإرسال. قد يكون الفيديو ضخماً جداً لمعالجته.");
+        await sendTextMessage(sender_psid, `❌ خطأ تقني حقيقي: ${error.message || error}`);
     }
 }
 
@@ -321,11 +333,18 @@ async function downloadFileLocally(url, destPath) {
     response.data.pipe(writer);
     return new Promise((resolve, reject) => {
         writer.on('finish', resolve);
-        writer.on('error', reject);
+        writer.on('error', (err) => {
+            if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
+            reject(err);
+        });
     });
 }
 
 async function uploadVideoToFacebook(sender_psid, filePath) {
+    if (!fs.existsSync(filePath)) {
+        throw new Error(`الملف المطلوب إرساله لفيسبوك غير موجود: ${filePath}`);
+    }
+
     const form = new FormData();
     form.append('recipient', JSON.stringify({ id: sender_psid }));
     form.append('message', JSON.stringify({
@@ -363,7 +382,7 @@ async function callSendAPI(requestBody) {
     try {
         await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, requestBody);
     } catch (error) {
-        console.error("⚠️ فشل إرسال الرد إلى فيسبوك.");
+        console.error("⚠️ فشل إرسال الرد إلى فيسبوك الداخلي.");
     }
 }
 
