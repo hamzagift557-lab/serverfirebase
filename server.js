@@ -2,7 +2,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const youtubedl = require('youtube-dl-exec');
+const youtubedl = require('youtube-dl-exec'); // أبقيناها لوقت الحاجة مستقبلاً
 const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
@@ -41,7 +41,6 @@ app.post('/webhook', (req, res) => {
     let body = req.body;
 
     if (body.object === 'page') {
-        // إرسال الرد فوراً لفيسبوك لتجنب إعادة إرسال الرسالة
         res.status(200).send('EVENT_RECEIVED');
 
         body.entry.forEach(async function(entry) {
@@ -77,10 +76,7 @@ app.post('/webhook', (req, res) => {
 // 3. دالة جلب الفيديوهات من XVideos
 async function fetchAndSendVideos(sender_psid, page = 1) {
     try {
-        // حل المشكلة: الصفحة الأولى هي الرابط الرئيسي، وما بعدها يأخذ أرقاماً
         let targetUrl = page === 1 ? 'https://www.xvideos.com/' : `https://www.xvideos.com/new/${page - 1}/`;
-        
-        // نستخدم ScraperAPI لجلب الـ HTML
         const scraperApiUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}`;
         
         const response = await axios.get(scraperApiUrl, {
@@ -150,23 +146,52 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
     }
 }
 
-// 4. دالة استخراج وتحميل وإرسال الفيديو
+// 4. دالة استخراج وتحميل وإرسال الفيديو (الخطة النهائية القاطعة)
 async function downloadAndSendVideo(sender_psid, videoUrl) {
     let filePath = '';
     try {
-        await sendTextMessage(sender_psid, "⏳ جاري تحميل الفيديو في السيرفر، يرجى الانتظار...");
+        await sendTextMessage(sender_psid, "⏳ جاري استخراج رابط الفيديو المباشر من الموقع...");
 
+        // 1. فتح صفحة الفيديو عبر ScraperAPI لتخطي الحظر
+        const scraperApiUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(videoUrl)}`;
+        const htmlResponse = await axios.get(scraperApiUrl);
+        const html = htmlResponse.data;
+
+        // 2. البحث عن رابط الجودة المنخفضة المخفي في السورس كود (لكي يناسب 25 ميجا الخاصة بفيسبوك)
+        let match = html.match(/setVideoUrlLow\('([^']+)'\)/);
+        if (!match || !match[1]) {
+            // إن لم يجد الجودة المنخفضة، يبحث عن الجودة العالية كبديل
+            match = html.match(/setVideoUrlHigh\('([^']+)'\)/);
+        }
+
+        if (!match || !match[1]) {
+            throw new Error("لم أتمكن من العثور على رابط mp4 داخل الكود المصدري للصفحة.");
+        }
+
+        const directUrl = match[1];
+        await sendTextMessage(sender_psid, "📥 تم الاستخراج بنجاح! جاري تحميل الفيديو للسيرفر (بدون أداة)...");
+
+        // 3. التحميل المباشر للفيديو إلى السيرفر
         filePath = path.join('/tmp', `video_${Date.now()}.mp4`);
+        const writer = fs.createWriteStream(filePath);
         
-        // yt-dlp يتصل مباشرة بسيرفرات XVideos بدون بروكسي
-        await youtubedl(videoUrl, {
-            format: 'worst[ext=mp4]/worst', // أقل جودة لتجنب تجاوز 25MB
-            noCheckCertificate: true,
-            output: filePath
+        const downloadResponse = await axios({
+            url: directUrl,
+            method: 'GET',
+            responseType: 'stream',
+            httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false }) // لتخطي مشكلة الشهادات
+        });
+
+        downloadResponse.data.pipe(writer);
+
+        await new Promise((resolve, reject) => {
+            writer.on('finish', resolve);
+            writer.on('error', reject);
         });
 
         await sendTextMessage(sender_psid, "🚀 اكتمل التحميل! جاري رفعه إلى ماسنجر الآن...");
 
+        // 4. الرفع إلى فيسبوك
         const form = new FormData();
         form.append('recipient', JSON.stringify({ id: sender_psid }));
         form.append('message', JSON.stringify({
@@ -185,6 +210,7 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
 
         console.log("✅ تم إرسال الفيديو للمستخدم بنجاح!");
 
+        // 5. مسح الفيديو من السيرفر
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
     } catch (error) {
@@ -196,7 +222,7 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
         
         if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
-        await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء التحميل. يرجى المحاولة مرة أخرى.");
+        await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء التحميل. قد يكون حجم الفيديو أكبر من 25MB (الحد الأقصى لفيسبوك).");
     }
 }
 
