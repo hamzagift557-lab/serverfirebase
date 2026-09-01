@@ -1,4 +1,3 @@
-
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
@@ -12,6 +11,9 @@ const VERIFY_TOKEN = "hamza_webhook_123";
 
 // التوكن الخاص بصفحتك
 const PAGE_ACCESS_TOKEN = "EAAG5a8VWw5IBSQsr4ZBce4wv6ZAL8q5xGe0eHaVMZB0mp1KpdPOw42SAFcpUSGrEBsoMnG8BNuTjRK0ZAuKRKizmSZCwPIBZCH8XV0TZBMF6ztKQm2vFLnyqM0QMw8v65uNsSX5ZCrB0F5Felk9HP32lBKxqMLtdTkfLUUjMWqMQqzjLLX4QsIdmJzsxtlVPOsxoa9VU";
+
+// مفتاح ScraperAPI الخاص بك
+const SCRAPER_API_KEY = "e52e3ecb8172c130934a150b2e7c5f22";
 
 // 1. مسار التحقق (GET)
 app.get('/webhook', (req, res) => {
@@ -41,7 +43,7 @@ app.post('/webhook', async (req, res) => {
                 let sender_psid = webhook_event.sender.id;
 
                 if (webhook_event.message && webhook_event.message.text) {
-                    console.log(`📩 استلام رسالة من ${sender_psid}، جاري جلب الفيديوهات...`);
+                    console.log(`📩 استلام رسالة من ${sender_psid}، جاري جلب الفيديوهات عبر ScraperAPI...`);
                     await fetchAndSendVideos(sender_psid);
                 } 
                 else if (webhook_event.postback) {
@@ -49,8 +51,7 @@ app.post('/webhook', async (req, res) => {
                     console.log(`🔘 تم الضغط على زر: ${payload}`);
                     
                     if (payload.startsWith('LOAD_MORE_')) {
-                        // يمكنك لاحقاً تعديل هذا الجزء لدعم الصفحات في رابط البحث
-                        await sendTextMessage(sender_psid, "ميزة المزيد قيد التحديث مع الرابط الجديد.");
+                        await sendTextMessage(sender_psid, "ميزة المزيد قيد التحديث.");
                     } else {
                         await sendTextMessage(sender_psid, `تم اختيار الفيديو! جارٍ تجهيز الرابط للخطوة القادمة: \n${payload}`);
                     }
@@ -67,19 +68,22 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
-// 3. دالة جلب الفيديوهات (Scraping) وإرسالها
+// 3. دالة جلب الفيديوهات (Scraping) عبر ScraperAPI وإرسالها
 async function fetchAndSendVideos(sender_psid) {
     try {
-        // الرابط الجديد الذي اقترحته للبحث عن الجديد
+        // الرابط الذي نريد فحصه
         const targetUrl = `https://www.pornhub.com/video/search?search=new`;
         
-        const response = await axios.get(targetUrl, {
+        // بناء رابط ScraperAPI مع تفعيل خاصية keep_headers لتمرير الكوكيز
+        const scraperApiUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}&keep_headers=true`;
+        
+        // إرسال الطلب عبر البروكسي المنزلي مع التنكر وتخطي العمر
+        const response = await axios.get(scraperApiUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://www.pornhub.com/',
-                'Cookie': 'age_verified=1; bs=1; accessAgeDisclaimerPH=1; platform=pc;' 
+                'Cookie': 'age_verified=1; bs=1; platform=pc;' 
             }
         });
 
@@ -88,7 +92,7 @@ async function fetchAndSendVideos(sender_psid) {
         let videoElements = $('.pcVideoListItem').toArray();
 
         for (let i = 0; i < videoElements.length; i++) {
-            if (elements.length >= 10) break; // سحب 10 بطاقات
+            if (elements.length >= 10) break; 
 
             let element = videoElements[i];
             let title = $(element).find('.title a').text().trim();
@@ -115,11 +119,11 @@ async function fetchAndSendVideos(sender_psid) {
         if (elements.length > 0) {
             await sendCarouselMessage(sender_psid, elements);
         } else {
-            await sendTextMessage(sender_psid, "لم أتمكن من العثور على فيديوهات، الموقع يقوم بحظر IP السيرفر الخاص بنا ويعرض محتوى فارغ أو إعلانات.");
+            await sendTextMessage(sender_psid, "لم أتمكن من العثور على فيديوهات، يبدو أن الموقع يعرض محتوى فارغ أو إعلانات.");
         }
 
     } catch (error) {
-        console.error("⚠️ حدث خطأ أثناء عملية السكرابنج أو تحليل الموقع:");
+        console.error("⚠️ حدث خطأ أثناء عملية السكرابنج أو التحليل:");
         console.error(error);
         await sendTextMessage(sender_psid, "حدث خطأ أثناء جلب الفيديوهات من الموقع.");
     }
