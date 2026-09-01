@@ -6,7 +6,7 @@ const youtubedl = require('youtube-dl-exec');
 const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
-const cloudinary = require('cloudinary').v2; // إضافة مكتبة Cloudinary
+const cloudinary = require('cloudinary').v2;
 
 const app = express();
 app.use(bodyParser.json());
@@ -20,7 +20,7 @@ const PAGE_ACCESS_TOKEN = "EAAG5a8VWw5IBSQsr4ZBce4wv6ZAL8q5xGe0eHaVMZB0mp1KpdPOw
 // مفتاح ScraperAPI الخاص بك
 const SCRAPER_API_KEY = "e52e3ecb8172c130934a150b2e7c5f22";
 
-// ⚠️ إعدادات Cloudinary (تأكد من وضع اسم السحابة الخاص بك هنا)
+// إعدادات Cloudinary
 cloudinary.config({
     cloud_name: 'xws2ntkz', 
     api_key: '213177591356185',
@@ -159,7 +159,7 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
     }
 }
 
-// 4. فحص الجودات (مع تفادي الأزرار المتطابقة)
+// 4. فحص الجودات
 async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
     try {
         await sendTextMessage(sender_psid, "⏳ جاري فحص الجودات والأحجام المتاحة لهذا الفيديو...");
@@ -231,7 +231,6 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
         const stats = fs.statSync(originalPath);
         const originalSizeMB = stats.size / (1024 * 1024);
 
-        // إذا كان الحجم أصلاً صغيراً، نرسله مباشرة
         if (originalSizeMB <= 24.5) {
             await sendTextMessage(sender_psid, `🚀 الحجم الأصلي مناسب (${originalSizeMB.toFixed(1)} MB)! جاري رفعه إلى ماسنجر الآن...`);
             await uploadVideoToFacebook(sender_psid, originalPath);
@@ -239,15 +238,18 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
             return;
         }
 
-        // إذا كان الحجم كبيراً، نبدأ نظام الضغط
-        await sendTextMessage(sender_psid, `⚠️ الحجم الأصلي (${originalSizeMB.toFixed(1)} MB) كبير جداً. جاري رفعه إلى منصة Cloudinary للضغط...`);
+        await sendTextMessage(sender_psid, `⚠️ الحجم الأصلي (${originalSizeMB.toFixed(1)} MB) كبير جداً. جاري رفعه إلى منصة Cloudinary للضغط عبر نظام الدفعات...`);
 
-        const uploadRes = await cloudinary.uploader.upload(originalPath, { resource_type: "video" });
+        // التعديل هنا: استخدام upload_large للرفع على دفعات بحجم 6 ميجا
+        const uploadRes = await cloudinary.uploader.upload_large(originalPath, { 
+            resource_type: "video",
+            chunk_size: 6000000 
+        });
+        
         publicId = uploadRes.public_id;
 
         await sendTextMessage(sender_psid, "✅ تم الرفع بنجاح! جاري ضغط الفيديو (المحاولة الأولى: جودة 480p)... قد يستغرق الأمر دقيقة.");
 
-        // المحاولة الأولى للضغط
         const url1 = cloudinary.url(publicId, {
             resource_type: 'video',
             transformation: [{ width: 480, crop: "scale", quality: "auto:low" }]
@@ -263,7 +265,6 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
             await sendTextMessage(sender_psid, `🚀 نجح الضغط الأول! الحجم أصبح (${compSizeMB.toFixed(1)} MB). جاري إرساله لماسنجر...`);
             await uploadVideoToFacebook(sender_psid, compressedPath);
         } else {
-            // المحاولة الثانية للضغط (أقصى درجة)
             await sendTextMessage(sender_psid, `⚠️ المحاولة الأولى لم تكن كافية (${compSizeMB.toFixed(1)} MB). جاري الضغط بأقصى قوة (المحاولة الثانية: 320p)...`);
             if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
 
@@ -284,7 +285,6 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
             }
         }
 
-        // تنظيف الملفات من السيرفر ومن حساب Cloudinary لتوفير المساحة
         await cloudinary.uploader.destroy(publicId, { resource_type: 'video' });
         if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
         if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
@@ -294,7 +294,6 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
         console.error(error);
         if (error.response && error.response.data) console.error(error.response.data);
         
-        // تنظيف عند الخطأ
         if (publicId) { try { await cloudinary.uploader.destroy(publicId, { resource_type: 'video' }); } catch(e){} }
         if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
         if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
@@ -303,15 +302,14 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
     }
 }
 
-// ================= دوال مساعدة إضافية لتنظيف الكود =================
-
+// دوال مساعدة
 async function downloadFileLocally(url, destPath) {
     const writer = fs.createWriteStream(destPath);
     const response = await axios({
         url: url,
         method: 'GET',
         responseType: 'stream',
-        timeout: 300000, // 5 دقائق مهلة كحد أقصى للتحميل/الضغط
+        timeout: 300000, 
         httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false }) 
     });
     response.data.pipe(writer);
