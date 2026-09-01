@@ -59,8 +59,15 @@ app.post('/webhook', (req, res) => {
                     if (payload.startsWith('LOAD_MORE_')) {
                         let nextPage = parseInt(payload.split('_')[2]);
                         await fetchAndSendVideos(sender_psid, nextPage);
-                    } else {
-                        await downloadAndSendVideo(sender_psid, payload);
+                    } 
+                    // إذا ضغط على إحدى الجودات لتحميلها
+                    else if (payload.startsWith('DOWNLOAD_VIDEO|')) {
+                        let directUrl = payload.split('|')[1];
+                        await downloadAndSendVideo(sender_psid, directUrl);
+                    } 
+                    // إذا ضغط على "اختيار للتحميل" من القائمة الرئيسية، نقوم بفحص الجودات
+                    else {
+                        await fetchQualitiesAndSendOptions(sender_psid, payload);
                     }
                 }
             } catch (error) {
@@ -146,27 +153,77 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
     }
 }
 
-// 4. دالة استخراج وتحميل وإرسال الفيديو
-async function downloadAndSendVideo(sender_psid, videoUrl) {
-    let filePath = '';
+// 4. الدالة الجديدة: فحص الجودات والأحجام وإرسال الأزرار
+async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
     try {
-        await sendTextMessage(sender_psid, "⏳ جاري استخراج رابط الفيديو المباشر من الموقع...");
+        await sendTextMessage(sender_psid, "⏳ جاري فحص الجودات والأحجام المتاحة لهذا الفيديو...");
 
         const scraperApiUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(videoUrl)}`;
         const htmlResponse = await axios.get(scraperApiUrl);
         const html = htmlResponse.data;
 
-        let match = html.match(/setVideoUrlLow\('([^']+)'\)/);
-        if (!match || !match[1]) {
-            match = html.match(/setVideoUrlHigh\('([^']+)'\)/);
+        let qualities = [];
+
+        // استخراج الجودة المنخفضة
+        let matchLow = html.match(/setVideoUrlLow\('([^']+)'\)/);
+        if (matchLow && matchLow[1]) {
+            qualities.push({ label: "منخفضة", url: matchLow[1] });
         }
 
-        if (!match || !match[1]) {
-            throw new Error("لم أتمكن من العثور على رابط mp4 داخل الكود المصدري للصفحة.");
+        // استخراج الجودة العالية
+        let matchHigh = html.match(/setVideoUrlHigh\('([^']+)'\)/);
+        if (matchHigh && matchHigh[1]) {
+            qualities.push({ label: "عالية", url: matchHigh[1] });
         }
 
-        const directUrl = match[1];
-        await sendTextMessage(sender_psid, "📥 تم الاستخراج بنجاح! جاري تحميل الفيديو للسيرفر لفحص حجمه...");
+        if (qualities.length === 0) {
+            await sendTextMessage(sender_psid, "❌ لم أتمكن من العثور على روابط التحميل في السورس كود.");
+            return;
+        }
+
+        let buttons = [];
+        
+        // فحص حجم كل جودة عبر طلب HEAD سريع جداً
+        for (let q of qualities) {
+            try {
+                const headRes = await axios.head(q.url, {
+                    httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false })
+                });
+                
+                let sizeBytes = headRes.headers['content-length'];
+                let sizeMB = sizeBytes ? (sizeBytes / (1024 * 1024)).toFixed(1) : "?";
+                
+                // إضافة الزر (يجب ألا يتجاوز العنوان 20 حرفاً بسبب قيود فيسبوك)
+                buttons.push({
+                    type: "postback",
+                    title: `📥${q.label}(${sizeMB}M)`,
+                    payload: `DOWNLOAD_VIDEO|${q.url}`
+                });
+            } catch (e) {
+                console.error(`⚠️ فشل جلب حجم الجودة الـ ${q.label}:`);
+                console.error(e);
+            }
+        }
+
+        if (buttons.length > 0) {
+            // إرسال رسالة الأزرار للمستخدم
+            await sendButtonMessage(sender_psid, "✅ تم العثور على الجودات التالية، اختر الأنسب لك (فيسبوك يقبل حتى 25M فقط):", buttons);
+        } else {
+            await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء قراءة أحجام الفيديو.");
+        }
+
+    } catch (error) {
+        console.error("⚠️ حدث خطأ أثناء فحص الجودات:");
+        console.error(error);
+        await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء الاتصال بالموقع لمعرفة الجودات.");
+    }
+}
+
+// 5. دالة التحميل والإرسال (محدثة لاستقبال الرابط المباشر فقط)
+async function downloadAndSendVideo(sender_psid, directUrl) {
+    let filePath = '';
+    try {
+        await sendTextMessage(sender_psid, "📥 جاري تحميل الفيديو للسيرفر لفحص حجمه...");
 
         filePath = path.join('/tmp', `video_${Date.now()}.mp4`);
         const writer = fs.createWriteStream(filePath);
@@ -191,13 +248,10 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
 
         if (fileSizeInMB > 24.5) {
             console.log(`⚠️ حجم الفيديو (${fileSizeInMB.toFixed(2)} MB) كبير جداً لفيسبوك.`);
-            
-            // إرسال الرابط المباشر للمستخدم
             await sendTextMessage(sender_psid, `⚠️ عذراً، حجم الفيديو (${fileSizeInMB.toFixed(1)} MB) يتجاوز الحد المسموح به في ماسنجر (25 MB).\n\n🔗 لكن يمكنك مشاهدته أو تحميله مباشرة بضغطة زر عبر الرابط التالي:\n\n${directUrl}`);
             
-            // مسح الملف فوراً لأنه لن يُرسل
             if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-            return; // إيقاف الدالة هنا لكي لا يحاول إرساله
+            return; 
         }
 
         await sendTextMessage(sender_psid, `🚀 حجم الفيديو مناسب (${fileSizeInMB.toFixed(1)} MB)! جاري رفعه إلى ماسنجر الآن...`);
@@ -231,11 +285,11 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
         
         if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
-        await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء التحميل. يرجى المحاولة في فيديو آخر.");
+        await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء التحميل. يرجى المحاولة مرة أخرى.");
     }
 }
 
-// 5. دالة إرسال رسالة نصية عادية
+// 6. دالة إرسال رسالة نصية عادية
 async function sendTextMessage(sender_psid, text) {
     const requestBody = {
         recipient: { id: sender_psid },
@@ -244,7 +298,25 @@ async function sendTextMessage(sender_psid, text) {
     await callSendAPI(requestBody);
 }
 
-// 6. دالة إرسال القائمة (Carousel)
+// 7. دالة إرسال رسالة بأزرار (Button Template)
+async function sendButtonMessage(sender_psid, text, buttons) {
+    const requestBody = {
+        recipient: { id: sender_psid },
+        message: {
+            attachment: {
+                type: "template",
+                payload: {
+                    template_type: "button",
+                    text: text,
+                    buttons: buttons
+                }
+            }
+        }
+    };
+    await callSendAPI(requestBody);
+}
+
+// 8. دالة إرسال القائمة (Carousel)
 async function sendCarouselMessage(sender_psid, elements) {
     const requestBody = {
         recipient: { id: sender_psid },
@@ -261,7 +333,7 @@ async function sendCarouselMessage(sender_psid, elements) {
     await callSendAPI(requestBody);
 }
 
-// 7. دالة التواصل مع API فيسبوك
+// 9. دالة التواصل مع API فيسبوك
 async function callSendAPI(requestBody) {
     try {
         await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, requestBody);
