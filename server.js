@@ -41,6 +41,7 @@ app.post('/webhook', (req, res) => {
     let body = req.body;
 
     if (body.object === 'page') {
+        // إرسال الرد فوراً لفيسبوك لتجنب إعادة إرسال الرسالة
         res.status(200).send('EVENT_RECEIVED');
 
         body.entry.forEach(async function(entry) {
@@ -76,11 +77,10 @@ app.post('/webhook', (req, res) => {
 // 3. دالة جلب الفيديوهات من XVideos
 async function fetchAndSendVideos(sender_psid, page = 1) {
     try {
-        // في موقع XVideos الصفحة الأولى تبدأ من 0
-        let pageIndex = page - 1;
-        const targetUrl = `https://www.xvideos.com/new/${pageIndex}`;
+        // حل المشكلة: الصفحة الأولى هي الرابط الرئيسي، وما بعدها يأخذ أرقاماً
+        let targetUrl = page === 1 ? 'https://www.xvideos.com/' : `https://www.xvideos.com/new/${page - 1}/`;
         
-        // نستخدم ScraperAPI لجلب الـ HTML فقط لضمان عدم حظر الـ IP الخاص بنا
+        // نستخدم ScraperAPI لجلب الـ HTML
         const scraperApiUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}`;
         
         const response = await axios.get(scraperApiUrl, {
@@ -92,19 +92,15 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
 
         const $ = cheerio.load(response.data);
         let elements = [];
-        let videoElements = $('.thumb-block').toArray(); // كلاس الفيديوهات في XVideos
+        let videoElements = $('.thumb-block').toArray(); 
 
         for (let i = 0; i < videoElements.length; i++) {
             if (elements.length >= 9) break; 
 
             let element = videoElements[i];
-            // استخراج العنوان
             let title = $(element).find('.title a').attr('title') || $(element).find('.title a').text().trim();
-            // استخراج الرابط
             let link = $(element).find('.title a').attr('href');
-            // استخراج الصورة
             let imgUrl = $(element).find('.thumb img').attr('data-src') || $(element).find('.thumb img').attr('src');
-            // استخراج المدة
             let duration = $(element).find('.duration').text().trim();
 
             if (title && link && imgUrl) {
@@ -162,10 +158,9 @@ async function downloadAndSendVideo(sender_psid, videoUrl) {
 
         filePath = path.join('/tmp', `video_${Date.now()}.mp4`);
         
-        // هنا قمنا بإزالة البروكسي! yt-dlp سيتصل مباشرة من سيرفر Fly.io 
-        // هذا سيلغي خطأ 400 الذي سببه ScraperAPI
+        // yt-dlp يتصل مباشرة بسيرفرات XVideos بدون بروكسي
         await youtubedl(videoUrl, {
-            format: 'worst[ext=mp4]/worst', // أخذ أقل جودة لكي لا يتجاوز 25MB
+            format: 'worst[ext=mp4]/worst', // أقل جودة لتجنب تجاوز 25MB
             noCheckCertificate: true,
             output: filePath
         });
