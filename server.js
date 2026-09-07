@@ -236,11 +236,11 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
             return;
         }
 
-        await sendTextMessage(sender_psid, `⚠️ الحجم الأصلي (${originalSizeMB.toFixed(1)} MB) كبير. جاري ضغطه محلياً بأعلى جودة ممكنة ليتناسب مع 24MB (يرجى الانتظار، قد يستغرق الأمر دقيقة أو أكثر)...`);
+        await sendTextMessage(sender_psid, `⚠️ الحجم الأصلي (${originalSizeMB.toFixed(1)} MB) كبير. جاري ضغطه محلياً بأعلى سرعة ممكنة ليتناسب مع 24MB...`);
 
         compressedPath = path.join('/tmp', `comp_${Date.now()}.mp4`);
         
-        // استدعاء دالة الضغط المحلي (تستهدف 23.5 ميجا لتكون في الجانب الآمن)
+        // استدعاء دالة الضغط المحلي
         await compressVideoLocally(originalPath, compressedPath, 23.5);
 
         const compStats = fs.statSync(compressedPath);
@@ -267,43 +267,55 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
     }
 }
 
-// دالة الضغط الذكية لحساب الحجم بدقة (FFmpeg)
+// دالة الضغط الذكية مع مراقبة التقدم (FFmpeg)
 function compressVideoLocally(inputPath, outputPath, targetSizeMB) {
     return new Promise((resolve, reject) => {
         ffmpeg.ffprobe(inputPath, (err, metadata) => {
-            let targetVideoBitrate = '300k'; // معدل البت الافتراضي في حال فشل قراءة الملف
+            let targetVideoBitrate = '300k'; 
 
             if (!err && metadata && metadata.format && metadata.format.duration) {
-                const duration = metadata.format.duration; // مدة الفيديو بالثواني
-                
-                // حساب معدل البت الإجمالي ليكون الحجم بالضبط حسب الهدف (بالكيلوبت)
+                const duration = metadata.format.duration; 
                 let totalBitrate = Math.floor((targetSizeMB * 8192) / duration);
-                
-                // خصم 128 كيلوبت مخصصة للصوت
                 let vBitrate = totalBitrate - 128;
-                
-                // وضع حد أدنى لجودة الفيديو حتى لا تتشوه الصورة تماماً
                 if (vBitrate < 100) vBitrate = 100; 
-                
                 targetVideoBitrate = vBitrate + 'k';
                 console.log(`تم حساب الـ Bitrate: ${targetVideoBitrate} لمدة ${duration} ثانية.`);
             } else {
                 console.log("لم يتمكن من قراءة مدة الفيديو، سيتم استخدام الضغط الافتراضي.");
             }
 
-            // بدء عملية الضغط
+            let lastLoggedPercent = -1;
+
             ffmpeg(inputPath)
                 .outputOptions([
+                    '-y', // الموافقة التلقائية على استبدال الملفات لتجنب التعليق
                     '-c:v libx264',
                     `-b:v ${targetVideoBitrate}`,
-                    '-preset veryfast', // للضغط السريع وتخفيف الحمل على السيرفر
+                    '-preset ultrafast', // أسرع إعداد ضغط ممكن
+                    '-threads 0', // استغلال كل أنوية المعالج للسرعة القصوى
                     '-c:a aac',
                     '-b:a 128k',
-                    '-movflags +faststart' // لتحسين تشغيل الفيديو على ماسنجر
+                    '-movflags +faststart'
                 ])
+                .on('progress', (progress) => {
+                    if (progress.percent) {
+                        let currentPercent = Math.floor(progress.percent);
+                        // طباعة النسبة المئوية كل 5% لكي لا نملأ السجل
+                        if (currentPercent > lastLoggedPercent && currentPercent % 5 === 0) {
+                            console.log(`⏳ جاري الضغط... اكتمل: ${currentPercent}%`);
+                            lastLoggedPercent = currentPercent;
+                        }
+                    }
+                })
                 .save(outputPath)
-                .on('end', () => resolve(outputPath))
-                .on('error', (err) => reject(err));
+                .on('end', () => {
+                    console.log("✅ اكتمل الضغط بنجاح!");
+                    resolve(outputPath);
+                })
+                .on('error', (err) => {
+                    console.error("❌ خطأ أثناء تنفيذ FFmpeg الحقيقي:", err);
+                    reject(err);
+                });
         });
     });
 }
