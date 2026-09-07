@@ -6,7 +6,15 @@ const youtubedl = require('youtube-dl-exec');
 const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
+
+// استدعاء مكتبات الضغط المحلي الذكي
+const ffmpeg = require('fluent-ffmpeg');
+const ffmpegStatic = require('ffmpeg-static');
+const ffprobeStatic = require('ffprobe-static');
+
+// تهيئة مسارات تشغيل FFmpeg برمجياً داخل السيرفر
+ffmpeg.setFfmpegPath(ffmpegStatic);
+ffmpeg.setFfprobePath(ffprobeStatic.path);
 
 const app = express();
 app.use(bodyParser.json());
@@ -19,10 +27,6 @@ const PAGE_ACCESS_TOKEN = "EAAG5a8VWw5IBSQsr4ZBce4wv6ZAL8q5xGe0eHaVMZB0mp1KpdPOw
 
 // مفتاح ScraperAPI الخاص بك
 const SCRAPER_API_KEY = "e52e3ecb8172c130934a150b2e7c5f22";
-
-// إعدادات Transloadit
-const TRANSLOADIT_AUTH_KEY = "7be965b5e5cd22f6023a9ccb2b63d34a";
-const TRANSLOADIT_AUTH_SECRET = "A8f2ea8c251d4b5daef805ec3086a2ee";
 
 // 1. مسار التحقق (GET)
 app.get('/webhook', (req, res) => {
@@ -200,7 +204,7 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
         }
 
         if (buttons.length > 0) {
-            await sendButtonMessage(sender_psid, "✅ تم العثور على الجودات التالية (البوت سيضغط الفيديو عبر Transloadit إذا تجاوز 25M):", buttons);
+            await sendButtonMessage(sender_psid, "✅ تم العثور على الجودات (البوت سيقوم بضغط الفيديو محلياً إذا تجاوز 25M):", buttons);
         } else {
             await sendTextMessage(sender_psid, "❌ حدث خطأ أثناء قراءة أحجام الفيديو.");
         }
@@ -211,7 +215,7 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
     }
 }
 
-// 5. محرك التحميل والضغط عبر Transloadit
+// 5. محرك التحميل والضغط المحلي الذكي (FFmpeg)
 async function downloadAndCompressVideo(sender_psid, directUrl) {
     let originalPath = '';
     let compressedPath = '';
@@ -232,79 +236,76 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
             return;
         }
 
-        await sendTextMessage(sender_psid, `⚠️ الحجم الأصلي (${originalSizeMB.toFixed(1)} MB) كبير جداً. جاري إرساله إلى Transloadit للضغط...`);
-
-        // التصحيح: وضع المفتاح داخل كائن auth حسب متطلبات Transloadit الرسمية
-        const params = {
-            auth: {
-                key: TRANSLOADIT_AUTH_KEY
-            },
-            steps: {
-                ":original": {
-                    robot: "/file/upload"
-                },
-                "compressed": {
-                    use: ":original",
-                    robot: "/video/encode",
-                    preset: "ipad-low",
-                    width: 480,
-                    bitrate: "300k"
-                }
-            }
-        };
-
-        const paramsString = JSON.stringify(params);
-
-        const form = new FormData();
-        form.append('params', paramsString);
-        form.append('file', fs.createReadStream(originalPath));
-
-        const transloaditRes = await axios.post('https://api2.transloadit.com/assemblies?wait=true', form, {
-            headers: form.getHeaders(),
-            maxContentLength: Infinity,
-            maxBodyLength: Infinity,
-            timeout: 300000
-        });
-
-        const assemblyData = transloaditRes.data;
-        if (assemblyData.ok !== 'ASSEMBLY_COMPLETED') {
-            throw new Error(`فشلت عملية المعالجة في Transloadit: ${assemblyData.message || assemblyData.error}`);
-        }
-
-        const compressedResults = assemblyData.results['compressed'];
-        if (!compressedResults || compressedResults.length === 0) {
-            throw new Error("لم يتم العثور على مخرجات الفيديو المضغوط في رد Transloadit.");
-        }
-
-        const compressedUrl = compressedResults[0].ssl_url || compressedResults[0].url;
-
-        await sendTextMessage(sender_psid, "✅ تم الضغط بنجاح عبر Transloadit! جاري جلب الفيديو المضغوط للسيرفر وإرساله...");
+        await sendTextMessage(sender_psid, `⚠️ الحجم الأصلي (${originalSizeMB.toFixed(1)} MB) كبير. جاري ضغطه محلياً بأعلى جودة ممكنة ليتناسب مع 24MB (يرجى الانتظار، قد يستغرق الأمر دقيقة أو أكثر)...`);
 
         compressedPath = path.join('/tmp', `comp_${Date.now()}.mp4`);
-        await downloadFileLocally(compressedUrl, compressedPath);
+        
+        // استدعاء دالة الضغط المحلي (تستهدف 23.5 ميجا لتكون في الجانب الآمن)
+        await compressVideoLocally(originalPath, compressedPath, 23.5);
 
         const compStats = fs.statSync(compressedPath);
         const compSizeMB = compStats.size / (1024 * 1024);
 
         if (compSizeMB <= 24.5) {
-            await sendTextMessage(sender_psid, `🚀 الحجم بعد الضغط أصبح (${compSizeMB.toFixed(1)} MB)! جاري إرساله لماسنجر...`);
+            await sendTextMessage(sender_psid, `🚀 نجح الضغط المحلي! الحجم أصبح (${compSizeMB.toFixed(1)} MB). جاري إرساله لماسنجر...`);
             await uploadVideoToFacebook(sender_psid, compressedPath);
         } else {
-            await sendTextMessage(sender_psid, `⚠️ حتى بعد الضغط بقي الحجم (${compSizeMB.toFixed(1)} MB) متجاوزاً 25MB.\n\n🔗 يمكنك التحميل عبر الرابط المباشر:\n${directUrl}`);
+            await sendTextMessage(sender_psid, `⚠️ على الرغم من الضغط، بقي الحجم (${compSizeMB.toFixed(1)} MB) متجاوزاً 25MB.\n\n🔗 يمكنك التحميل عبر الرابط المباشر:\n${directUrl}`);
         }
 
+        // تنظيف الملفات
         if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
         if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
 
     } catch (error) {
-        console.error("⚠️ حدث خطأ أثناء نظام الضغط:", error.response?.data || error.message || error);
+        console.error("⚠️ حدث خطأ أثناء نظام الضغط المحلي:", error.message || error);
         
         if (originalPath && fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
         if (compressedPath && fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
 
-        const detailedError = error.response?.data ? JSON.stringify(error.response.data) : (error.message || error);
-        await sendTextMessage(sender_psid, `❌ خطأ أثناء معالجة وضغط الفيديو:\n${detailedError}`);
+        await sendTextMessage(sender_psid, `❌ خطأ أثناء معالجة وضغط الفيديو:\n${error.message || error}`);
     }
+}
+
+// دالة الضغط الذكية لحساب الحجم بدقة (FFmpeg)
+function compressVideoLocally(inputPath, outputPath, targetSizeMB) {
+    return new Promise((resolve, reject) => {
+        ffmpeg.ffprobe(inputPath, (err, metadata) => {
+            let targetVideoBitrate = '300k'; // معدل البت الافتراضي في حال فشل قراءة الملف
+
+            if (!err && metadata && metadata.format && metadata.format.duration) {
+                const duration = metadata.format.duration; // مدة الفيديو بالثواني
+                
+                // حساب معدل البت الإجمالي ليكون الحجم بالضبط حسب الهدف (بالكيلوبت)
+                let totalBitrate = Math.floor((targetSizeMB * 8192) / duration);
+                
+                // خصم 128 كيلوبت مخصصة للصوت
+                let vBitrate = totalBitrate - 128;
+                
+                // وضع حد أدنى لجودة الفيديو حتى لا تتشوه الصورة تماماً
+                if (vBitrate < 100) vBitrate = 100; 
+                
+                targetVideoBitrate = vBitrate + 'k';
+                console.log(`تم حساب الـ Bitrate: ${targetVideoBitrate} لمدة ${duration} ثانية.`);
+            } else {
+                console.log("لم يتمكن من قراءة مدة الفيديو، سيتم استخدام الضغط الافتراضي.");
+            }
+
+            // بدء عملية الضغط
+            ffmpeg(inputPath)
+                .outputOptions([
+                    '-c:v libx264',
+                    `-b:v ${targetVideoBitrate}`,
+                    '-preset veryfast', // للضغط السريع وتخفيف الحمل على السيرفر
+                    '-c:a aac',
+                    '-b:a 128k',
+                    '-movflags +faststart' // لتحسين تشغيل الفيديو على ماسنجر
+                ])
+                .save(outputPath)
+                .on('end', () => resolve(outputPath))
+                .on('error', (err) => reject(err));
+        });
+    });
 }
 
 // دوال مساعدة
