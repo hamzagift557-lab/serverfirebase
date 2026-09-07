@@ -58,16 +58,30 @@ app.post('/webhook', (req, res) => {
 
             try {
                 if (webhook_event.message && webhook_event.message.text) {
-                    console.log(`📩 استلام رسالة من ${sender_psid}، جاري جلب الفيديوهات...`);
-                    await fetchAndSendVideos(sender_psid, 1);
+                    let userText = webhook_event.message.text.trim();
+                    console.log(`📩 استلام رسالة من ${sender_psid}: "${userText}"`);
+                    
+                    if (userText === 'مرحبا' || userText.toLowerCase() === 'hi') {
+                        await fetchAndSendVideos(sender_psid, 1, "");
+                    } else {
+                        await fetchAndSendVideos(sender_psid, 1, userText);
+                    }
                 } 
                 else if (webhook_event.postback) {
                     let payload = webhook_event.postback.payload;
                     console.log(`🔘 تم الضغط على زر: ${payload}`);
                     
-                    if (payload.startsWith('LOAD_MORE_')) {
+                    // دعم الأزرار الجديدة التي تحتوي على نص البحث
+                    if (payload.startsWith('LOAD_MORE|')) {
+                        let parts = payload.split('|');
+                        let nextPage = parseInt(parts[1]);
+                        let searchQuery = parts[2] || "";
+                        await fetchAndSendVideos(sender_psid, nextPage, searchQuery);
+                    }
+                    // دعم رجعي للأزرار القديمة لتجنب الأعطال
+                    else if (payload.startsWith('LOAD_MORE_')) {
                         let nextPage = parseInt(payload.split('_')[2]);
-                        await fetchAndSendVideos(sender_psid, nextPage);
+                        await fetchAndSendVideos(sender_psid, nextPage, "");
                     } 
                     else if (payload.startsWith('DOWNLOAD_VIDEO|')) {
                         let directUrl = payload.split('|')[1];
@@ -87,10 +101,20 @@ app.post('/webhook', (req, res) => {
     }
 });
 
-// 3. دالة جلب الفيديوهات
-async function fetchAndSendVideos(sender_psid, page = 1) {
+// 3. دالة جلب الفيديوهات (مع دعم البحث)
+async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
     try {
-        let targetUrl = page === 1 ? 'https://www.xvideos.com/' : `https://www.xvideos.com/new/${page - 1}/`;
+        let targetUrl = '';
+        if (searchQuery !== "") {
+            let p = page - 1;
+            targetUrl = `https://www.xvideos.com/?k=${encodeURIComponent(searchQuery)}${p > 0 ? '&p=' + p : ''}`;
+            if (page === 1) {
+                await sendTextMessage(sender_psid, `🔍 جاري البحث عن: ${searchQuery}...`);
+            }
+        } else {
+            targetUrl = page === 1 ? 'https://www.xvideos.com/' : `https://www.xvideos.com/new/${page - 1}/`;
+        }
+
         const scraperApiUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}`;
         
         const response = await axios.get(scraperApiUrl, {
@@ -143,19 +167,20 @@ async function fetchAndSendVideos(sender_psid, page = 1) {
                     {
                         type: "postback",
                         title: "عرض المزيد ➡️",
-                        payload: `LOAD_MORE_${page + 1}`
+                        payload: `LOAD_MORE|${page + 1}|${searchQuery}`
                     }
                 ]
             });
 
             await sendCarouselMessage(sender_psid, elements);
         } else {
-            await sendTextMessage(sender_psid, "لم أتمكن من العثور على فيديوهات في هذه الصفحة.");
+            await sendTextMessage(sender_psid, "❌ لم أتمكن من العثور على فيديوهات مطابقة.");
         }
 
     } catch (error) {
-        console.error("⚠️ حدث خطأ أثناء عملية السكرابنج أو التحليل:", error.message || error);
-        await sendTextMessage(sender_psid, `حدث خطأ أثناء جلب الفيديوهات من الموقع: ${error.message || error}`);
+        let realError = error.response?.data ? JSON.stringify(error.response.data) : (error.message || error);
+        console.error("⚠️ حدث خطأ أثناء عملية السكرابنج الحقيقي:", realError);
+        await sendTextMessage(sender_psid, `حدث خطأ أثناء جلب الفيديوهات:\n${realError}`);
     }
 }
 
@@ -210,8 +235,9 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
         }
 
     } catch (error) {
-        console.error("⚠️ حدث خطأ أثناء فحص الجودات:", error.message || error);
-        await sendTextMessage(sender_psid, `❌ حدث خطأ أثناء الاتصال بالموقع لمعرفة الجودات: ${error.message || error}`);
+        let realError = error.response?.data ? JSON.stringify(error.response.data) : (error.message || error);
+        console.error("⚠️ حدث خطأ أثناء فحص الجودات:", realError);
+        await sendTextMessage(sender_psid, `❌ حدث خطأ أثناء الاتصال بالموقع:\n${realError}`);
     }
 }
 
@@ -236,12 +262,12 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
             return;
         }
 
-        await sendTextMessage(sender_psid, `⚠️ الحجم الأصلي (${originalSizeMB.toFixed(1)} MB) كبير. جاري ضغطه محلياً بأعلى سرعة ممكنة ليتناسب مع 24MB...`);
+        await sendTextMessage(sender_psid, `⚠️ الحجم الأصلي (${originalSizeMB.toFixed(1)} MB) كبير. جاري ضغطه محلياً لتجاوز قيود فيسبوك...`);
 
         compressedPath = path.join('/tmp', `comp_${Date.now()}.mp4`);
         
-        // استدعاء دالة الضغط المحلي
-        await compressVideoLocally(originalPath, compressedPath, 23.5);
+        // تقليل الهدف إلى 22 ميجابايت لتجنب خطأ 500 من سيرفرات فيسبوك تماماً
+        await compressVideoLocally(originalPath, compressedPath, 22.0);
 
         const compStats = fs.statSync(compressedPath);
         const compSizeMB = compStats.size / (1024 * 1024);
@@ -258,12 +284,14 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
         if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
 
     } catch (error) {
-        console.error("⚠️ حدث خطأ أثناء نظام الضغط المحلي:", error.message || error);
+        // استخراج وطباعة الخطأ الحقيقي كما طلبت
+        let realError = error.response?.data ? JSON.stringify(error.response.data) : (error.message || error);
+        console.error("⚠️ حدث خطأ حقيقي أثناء معالجة أو إرسال الفيديو:", realError);
         
         if (originalPath && fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
         if (compressedPath && fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
 
-        await sendTextMessage(sender_psid, `❌ خطأ أثناء معالجة وضغط الفيديو:\n${error.message || error}`);
+        await sendTextMessage(sender_psid, `❌ حدث خطأ تقني:\n${realError}`);
     }
 }
 
@@ -279,7 +307,7 @@ function compressVideoLocally(inputPath, outputPath, targetSizeMB) {
                 let vBitrate = totalBitrate - 128;
                 if (vBitrate < 100) vBitrate = 100; 
                 targetVideoBitrate = vBitrate + 'k';
-                console.log(`تم حساب الـ Bitrate: ${targetVideoBitrate} لمدة ${duration} ثانية.`);
+                console.log(`تم حساب الـ Bitrate: ${targetVideoBitrate} لمدة ${duration} ثانية للوصول لـ ${targetSizeMB}MB.`);
             } else {
                 console.log("لم يتمكن من قراءة مدة الفيديو، سيتم استخدام الضغط الافتراضي.");
             }
@@ -288,11 +316,11 @@ function compressVideoLocally(inputPath, outputPath, targetSizeMB) {
 
             ffmpeg(inputPath)
                 .outputOptions([
-                    '-y', // الموافقة التلقائية على استبدال الملفات لتجنب التعليق
+                    '-y',
                     '-c:v libx264',
                     `-b:v ${targetVideoBitrate}`,
-                    '-preset ultrafast', // أسرع إعداد ضغط ممكن
-                    '-threads 0', // استغلال كل أنوية المعالج للسرعة القصوى
+                    '-preset ultrafast', 
+                    '-threads 0', 
                     '-c:a aac',
                     '-b:a 128k',
                     '-movflags +faststart'
@@ -300,7 +328,6 @@ function compressVideoLocally(inputPath, outputPath, targetSizeMB) {
                 .on('progress', (progress) => {
                     if (progress.percent) {
                         let currentPercent = Math.floor(progress.percent);
-                        // طباعة النسبة المئوية كل 5% لكي لا نملأ السجل
                         if (currentPercent > lastLoggedPercent && currentPercent % 5 === 0) {
                             console.log(`⏳ جاري الضغط... اكتمل: ${currentPercent}%`);
                             lastLoggedPercent = currentPercent;
@@ -352,10 +379,12 @@ async function uploadVideoToFacebook(sender_psid, filePath) {
     }));
     form.append('filedata', fs.createReadStream(filePath));
 
+    // إضافة وقت انتظار طويل لتجنب Timeout من فيسبوك
     await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, form, {
         headers: form.getHeaders(),
         maxContentLength: Infinity,
-        maxBodyLength: Infinity
+        maxBodyLength: Infinity,
+        timeout: 600000 
     });
     console.log("✅ تم إرسال الفيديو للمستخدم بنجاح!");
 }
@@ -382,7 +411,8 @@ async function callSendAPI(requestBody) {
     try {
         await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, requestBody);
     } catch (error) {
-        console.error("⚠️ فشل إرسال الرد إلى فيسبوك الداخلي:", error.response?.data || error.message);
+        let realError = error.response?.data ? JSON.stringify(error.response.data) : (error.message || error);
+        console.error("⚠️ فشل إرسال الرد إلى فيسبوك الداخلي:", realError);
     }
 }
 
