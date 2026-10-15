@@ -3,7 +3,8 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const fs = require('fs');
 const path = require('path');
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 
 // استدعاء مكتبات الضغط المحلي الذكي
@@ -17,95 +18,110 @@ ffmpeg.setFfprobePath(ffprobeStatic.path);
 
 // إعداد خادم Express بسيط لإبقاء الاستضافة تعمل
 const app = express();
-app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Running!'));
+app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Running on Low RAM!'));
 
 // مفتاح ScraperAPI الخاص بك
 const SCRAPER_API_KEY = "e52e3ecb8172c130934a150b2e7c5f22";
 
-// إعداد عميل واتساب مع حفظ الجلسة وإزالة الخيارات المسببة لـ SIGTRAP
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--disable-gpu'
-        ]
-    }
-});
+let sock;
 
-// 1. توليد وعرض كود QR في الكونسول
-client.on('qr', (qr) => {
-    console.log('📱 يرجى مسح كود QR التالي باستخدام تطبيق واتساب في هاتفك:');
-    qrcode.generate(qr, { small: true });
-});
-
-// 2. تأكيد الاتصال
-client.on('ready', () => {
-    console.log('✅ تم ربط واتساب بنجاح! البوت الآن جاهز لاستقبال الرسائل.');
-});
-
-// طباعة أي خطأ مصادقة أو انقطاع اتصال بشكل حقيقي
-client.on('auth_failure', msg => {
-    console.error('❌ فشل المصادقة في واتساب (الرد الأصلي):', msg);
-});
-
-client.on('disconnected', (reason) => {
-    console.error('⚠️ تم قطع اتصال واتساب (السبب الأصلي):', reason);
-});
-
-// 3. مسار استقبال الرسائل من واتساب
-client.on('message', async msg => {
-    let userText = msg.body.trim();
-    let sender_psid = msg.from;
-
-    console.log(`📩 استلام رسالة من ${sender_psid}: "${userText}"`);
-
+// إعداد وتشغيل عميل واتساب الخفيف (Baileys) بدون متصفح
+async function connectToWhatsApp() {
     try {
-        // إذا أرسل المستخدم أمر تحميل الصفحة التالية
-        if (userText.startsWith('LOAD_MORE|')) {
-            let parts = userText.split('|');
-            let nextPage = parseInt(parts[1]);
-            let searchQuery = parts[2] || "";
-            await fetchAndSendVideos(sender_psid, nextPage, searchQuery);
-        }
-        // إذا أرسل المستخدم رابط فيديو مباشر للتحميل (ينتهي بـ mp4 أو يحتوي على secure)
-        else if (userText.startsWith('http') && (userText.includes('mp4_sd.mp4') || userText.includes('secure='))) {
-            await downloadAndCompressVideo(sender_psid, userText);
-        }
-        // إذا أرسل المستخدم رابط صفحة الفيديو من الموقع لمعرفة الجودات
-        else if (userText.startsWith('http') && userText.includes('xvideos.com')) {
-            await fetchQualitiesAndSendOptions(sender_psid, userText);
-        }
-        // إذا أرسل ترحيب
-        else if (userText === 'مرحبا' || userText.toLowerCase() === 'hi') {
-            await fetchAndSendVideos(sender_psid, 1, "");
-        } 
-        // أي كلمة أخرى تعتبر بحث
-        else {
-            await fetchAndSendVideos(sender_psid, 1, userText);
-        }
-    } catch (error) {
-        console.error("⚠️ حدث خطأ داخلي أثناء معالجة الحدث:", error);
-    }
-});
+        const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
-// تشغيل العميل مع التقاط وطباعة الخطأ الأصلي الكامل في حال الفشل
-client.initialize().catch(err => {
-    console.error("❌ خطأ حقيقي أثناء تشغيل متصفح واتساب (client.initialize):", err.stack || err.message || err);
-});
+        sock = makeWASocket({
+            auth: state,
+            printQRInTerminal: false,
+            logger: pino({ level: 'silent' }),
+            browser: ['WhatsApp Bot', 'Chrome', '1.0.0']
+        });
+
+        // حفظ جلسة تسجيل الدخول تلقائياً
+        sock.ev.on('creds.update', saveCreds);
+
+        // 1. إدارة الاتصال وتوليد كود QR
+        sock.ev.on('connection.update', (update) => {
+            const { connection, lastDisconnect, qr } = update;
+
+            if (qr) {
+                console.log('📱 يرجى مسح كود QR التالي باستخدام تطبيق واتساب في هاتفك:');
+                qrcode.generate(qr, { small: true });
+            }
+
+            if (connection === 'close') {
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                console.error('⚠️ تم قطع اتصال واتساب (الرد الأصلي):', lastDisconnect?.error?.stack || lastDisconnect?.error?.message || lastDisconnect?.error);
+                if (shouldReconnect) {
+                    console.log('🔄 جاري إعادة الاتصال بواتساب...');
+                    connectToWhatsApp();
+                }
+            } else if (connection === 'open') {
+                console.log('✅ تم ربط واتساب بنجاح! البوت الآن جاهز لاستقبال الرسائل.');
+            }
+        });
+
+        // 2. مسار استقبال الرسائل من واتساب
+        sock.ev.on('messages.upsert', async ({ messages, type }) => {
+            if (type !== 'notify') return;
+            const msg = messages[0];
+            if (!msg.message || msg.key.fromMe) return;
+
+            const sender_psid = msg.key.remoteJid;
+            const userText = (
+                msg.message.conversation ||
+                msg.message.extendedTextMessage?.text ||
+                ""
+            ).trim();
+
+            if (!userText) return;
+
+            console.log(`📩 استلام رسالة من ${sender_psid}: "${userText}"`);
+
+            try {
+                // إذا أرسل المستخدم أمر تحميل الصفحة التالية
+                if (userText.startsWith('LOAD_MORE|')) {
+                    let parts = userText.split('|');
+                    let nextPage = parseInt(parts[1]);
+                    let searchQuery = parts[2] ? parts[2] : "";
+                    await fetchAndSendVideos(sender_psid, nextPage, searchQuery);
+                }
+                // إذا أرسل المستخدم رابط فيديو مباشر للتحميل (ينتهي بـ mp4 أو يحتوي على secure)
+                else if (userText.startsWith('http') && (userText.includes('mp4_sd.mp4') || userText.includes('secure='))) {
+                    await downloadAndCompressVideo(sender_psid, userText);
+                }
+                // إذا أرسل المستخدم رابط صفحة الفيديو من الموقع لمعرفة الجودات
+                else if (userText.startsWith('http') && userText.includes('xvideos.com')) {
+                    await fetchQualitiesAndSendOptions(sender_psid, userText);
+                }
+                // إذا أرسل ترحيب
+                else if (userText === 'مرحبا' || userText.toLowerCase() === 'hi') {
+                    await fetchAndSendVideos(sender_psid, 1, "");
+                } 
+                // أي كلمة أخرى تعتبر بحث
+                else {
+                    await fetchAndSendVideos(sender_psid, 1, userText);
+                }
+            } catch (error) {
+                console.error("⚠️ حدث خطأ داخلي أثناء معالجة الحدث:", error?.stack || error?.message || error);
+            }
+        });
+
+    } catch (err) {
+        console.error("❌ خطأ حقيقي أثناء تهيئة اتصال واتساب:", err?.stack || err?.message || err);
+    }
+}
+
+// بدء تشغيل واتساب
+connectToWhatsApp();
 
 // حماية السيرفر من الانهيار وطباعة تفاصيل أي خطأ غير معالج بدقة
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason) => {
     console.error('⚠️ خطأ غير معالج (Unhandled Rejection - الرد الأصلي):', reason?.stack || reason?.message || reason);
 });
 
-// دالة جلب الفيديوهات (مع دعم البحث)
+// 3. دالة جلب الفيديوهات (مع دعم البحث)
 async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
     try {
         let targetUrl = '';
@@ -136,7 +152,10 @@ async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
             if (elements.length >= 9) break; 
 
             let element = videoElements[i];
-            let title = $(element).find('.title a').attr('title') \vert{}\vert{}$(element).find('.title a').text().trim();
+            let attrTitle = $(element).find('.title a').attr('title');
+            let textTitle = $(element).find('.title a').text().trim();
+            let title = attrTitle ? attrTitle : textTitle;
+
             let link = $(element).find('.title a').attr('href');
             let duration = $(element).find('.duration').text().trim();
 
@@ -163,7 +182,7 @@ async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
     }
 }
 
-// فحص الجودات
+// 4. فحص الجودات
 async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
     try {
         await sendTextMessage(sender_psid, "⏳ جاري فحص الجودات والأحجام المتاحة لهذا الفيديو...");
@@ -219,7 +238,7 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
     }
 }
 
-// محرك التحميل والضغط المحلي الذكي (FFmpeg)
+// 5. محرك التحميل والضغط المحلي الذكي (FFmpeg)
 async function downloadAndCompressVideo(sender_psid, directUrl) {
     let originalPath = '';
     let compressedPath = '';
@@ -233,7 +252,7 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
         const stats = fs.statSync(originalPath);
         const originalSizeMB = stats.size / (1024 * 1024);
 
-        // تم رفع الحد المسموح به إلى 60 ميجا لأن واتساب يدعم أحجاماً أكبر من فيسبوك!
+        // واتساب يدعم إرسال الفيديوهات حتى 60 ميجابايت بسهولة
         if (originalSizeMB <= 60.0) {
             await sendTextMessage(sender_psid, `🚀 الحجم مناسب لواتساب (${originalSizeMB.toFixed(1)} MB)! جاري رفعه الآن...`);
             await uploadVideoToWhatsApp(sender_psid, originalPath);
@@ -271,7 +290,7 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
     }
 }
 
-// دالة الضغط الذكية مع مراقبة التقدم (FFmpeg)
+// دالة الضغط الذكية مع مراقبة التقدم (مضبوطة لتوفير الرام 256MB)
 function compressVideoLocally(inputPath, outputPath, targetSizeMB) {
     return new Promise((resolve, reject) => {
         ffmpeg.ffprobe(inputPath, (err, metadata) => {
@@ -296,7 +315,7 @@ function compressVideoLocally(inputPath, outputPath, targetSizeMB) {
                     '-c:v libx264',
                     `-b:v ${targetVideoBitrate}`,
                     '-preset ultrafast', 
-                    '-threads 0', 
+                    '-threads 2', // تحديد نواتين فقط لحماية رام 256MB من الامتلاء
                     '-c:a aac',
                     '-b:a 128k',
                     '-movflags +faststart'
@@ -343,18 +362,20 @@ async function downloadFileLocally(url, destPath) {
     });
 }
 
-// دالة مخصصة لإرسال الفيديو إلى واتساب
+// دالة إرسال الفيديو إلى واتساب مباشرة من القرص دون استهلاك الرام
 async function uploadVideoToWhatsApp(sender_psid, filePath) {
     if (!fs.existsSync(filePath)) {
         throw new Error(`الملف المطلوب إرساله لواتساب غير موجود: ${filePath}`);
     }
-    const media = MessageMedia.fromFilePath(filePath);
-    await client.sendMessage(sender_psid, media, { sendMediaAsDocument: false });
+    await sock.sendMessage(sender_psid, {
+        video: { url: filePath },
+        mimetype: 'video/mp4'
+    });
     console.log("✅ تم إرسال الفيديو للمستخدم في واتساب بنجاح!");
 }
 
 async function sendTextMessage(sender_psid, text) {
-    await client.sendMessage(sender_psid, text);
+    await sock.sendMessage(sender_psid, { text: text });
 }
 
 // تحويل واجهة الأزرار لتتناسب مع واتساب كنصوص
@@ -363,7 +384,7 @@ async function sendButtonMessage(sender_psid, text, buttons) {
     buttons.forEach(b => {
         msg += `✨ ${b.title}\n🔗 ${b.payload}\n\n`;
     });
-    await client.sendMessage(sender_psid, msg);
+    await sock.sendMessage(sender_psid, { text: msg });
 }
 
 // تحويل واجهة الكاروسيل لتتناسب مع واتساب كنصوص
@@ -375,10 +396,10 @@ async function sendCarouselMessage(sender_psid, elements, currentPage, searchQue
     
     msg += `🔄 للمزيد من الفيديوهات أرسل الأمر التالي:\nLOAD_MORE|${currentPage + 1}|${searchQuery}`;
     
-    await client.sendMessage(sender_psid, msg);
+    await sock.sendMessage(sender_psid, { text: msg });
 }
 
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT ? process.env.PORT : 8080;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 السيرفر يعمل لتجنب إيقاف الاستضافة على المنفذ ${PORT}`);
+    console.log(`🚀 السيرفر يعمل بنجاح على المنفذ ${PORT}`);
 });
