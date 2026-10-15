@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
-const qrcode = require('qrcode-terminal');
+const qrcode = require('qrcode'); // استخدام المكتبة الجديدة للصورة
 
 // استدعاء مكتبات الضغط المحلي الذكي
 const ffmpeg = require('fluent-ffmpeg');
@@ -16,9 +16,35 @@ const ffprobeStatic = require('ffprobe-static');
 ffmpeg.setFfmpegPath(ffmpegStatic);
 ffmpeg.setFfprobePath(ffprobeStatic.path);
 
-// إعداد خادم Express بسيط لإبقاء الاستضافة تعمل
+// إعداد خادم Express
 const app = express();
+let currentQR = ''; // لتخزين صورة الكود
+let isConnected = false; // لمعرفة حالة الاتصال
+
+// الصفحة الرئيسية
 app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Running on Low RAM!'));
+
+// 🌟 صفحة ويب خاصة وجميلة لعرض كود QR بوضوح
+app.get('/qr', (req, res) => {
+    if (isConnected) {
+        res.send('<h2 style="color: green; text-align: center; margin-top: 50px;">✅ البوت متصل بواتساب بنجاح! لا حاجة لمسح الكود.</h2>');
+    } else if (currentQR) {
+        res.send(`
+            <html>
+                <body style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100vh; background-color:#f0f2f5; font-family: Arial, sans-serif;">
+                    <div style="text-align:center; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
+                        <h2 style="color: #075e54;">📱 ربط بوت واتساب</h2>
+                        <p>افتح واتساب في هاتفك > الأجهزة المرتبطة > مسح الكود</p>
+                        <img src="${currentQR}" style="width:300px; height:300px; border: 2px solid #ddd; border-radius: 10px; padding: 10px;"/>
+                        <p style="color: red; font-size: 14px;">(قم بتحديث هذه الصفحة إذا تأخرت في مسح الكود وانتهت صلاحيته)</p>
+                    </div>
+                </body>
+            </html>
+        `);
+    } else {
+        res.send('<h2 style="text-align: center; margin-top: 50px;">⏳ جاري توليد الكود... قم بتحديث هذه الصفحة بعد 5 ثوانٍ.</h2>');
+    }
+});
 
 // مفتاح ScraperAPI الخاص بك
 const SCRAPER_API_KEY = "e52e3ecb8172c130934a150b2e7c5f22";
@@ -32,7 +58,7 @@ async function connectToWhatsApp() {
 
         sock = makeWASocket({
             auth: state,
-            printQRInTerminal: false,
+            printQRInTerminal: false, // تم الإلغاء من السجل لمنع التشويه
             logger: pino({ level: 'silent' }),
             browser: ['WhatsApp Bot', 'Chrome', '1.0.0']
         });
@@ -41,23 +67,35 @@ async function connectToWhatsApp() {
         sock.ev.on('creds.update', saveCreds);
 
         // 1. إدارة الاتصال وتوليد كود QR
-        sock.ev.on('connection.update', (update) => {
+        sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect, qr } = update;
 
             if (qr) {
-                console.log('📱 يرجى مسح كود QR التالي باستخدام تطبيق واتساب في هاتفك:');
-                qrcode.generate(qr, { small: true });
+                console.log('📱 تم توليد الكود! افتح هذا الرابط في متصفحك لمسحه:');
+                console.log(`➡️ https://${process.env.FLY_APP_NAME}.fly.dev/qr`);
+                
+                // تحويل الكود إلى صورة وحفظه في المتغير
+                currentQR = await qrcode.toDataURL(qr);
             }
 
             if (connection === 'close') {
+                isConnected = false;
+                currentQR = '';
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-                console.error('⚠️ تم قطع اتصال واتساب (الرد الأصلي):', lastDisconnect?.error?.stack || lastDisconnect?.error?.message || lastDisconnect?.error);
+                console.error('⚠️ تم قطع اتصال واتساب (الرد الأصلي):', lastDisconnect?.error?.message || lastDisconnect?.error);
                 if (shouldReconnect) {
                     console.log('🔄 جاري إعادة الاتصال بواتساب...');
                     connectToWhatsApp();
+                } else {
+                    console.log('❌ تم تسجيل الخروج من الهاتف. يجب مسح الكود من جديد.');
+                    // لحذف بيانات الاعتماد القديمة إذا قام المستخدم بتسجيل الخروج من هاتفه
+                    fs.rmSync('auth_info_baileys', { recursive: true, force: true });
+                    connectToWhatsApp();
                 }
             } else if (connection === 'open') {
+                isConnected = true;
+                currentQR = '';
                 console.log('✅ تم ربط واتساب بنجاح! البوت الآن جاهز لاستقبال الرسائل.');
             }
         });
@@ -116,7 +154,6 @@ async function connectToWhatsApp() {
 // بدء تشغيل واتساب
 connectToWhatsApp();
 
-// حماية السيرفر من الانهيار وطباعة تفاصيل أي خطأ غير معالج بدقة
 process.on('unhandledRejection', (reason) => {
     console.error('⚠️ خطأ غير معالج (Unhandled Rejection - الرد الأصلي):', reason?.stack || reason?.message || reason);
 });
@@ -252,7 +289,6 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
         const stats = fs.statSync(originalPath);
         const originalSizeMB = stats.size / (1024 * 1024);
 
-        // واتساب يدعم إرسال الفيديوهات حتى 60 ميجابايت بسهولة
         if (originalSizeMB <= 60.0) {
             await sendTextMessage(sender_psid, `🚀 الحجم مناسب لواتساب (${originalSizeMB.toFixed(1)} MB)! جاري رفعه الآن...`);
             await uploadVideoToWhatsApp(sender_psid, originalPath);
@@ -290,7 +326,7 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
     }
 }
 
-// دالة الضغط الذكية مع مراقبة التقدم (مضبوطة لتوفير الرام 256MB)
+// دالة الضغط الذكية مع مراقبة التقدم
 function compressVideoLocally(inputPath, outputPath, targetSizeMB) {
     return new Promise((resolve, reject) => {
         ffmpeg.ffprobe(inputPath, (err, metadata) => {
@@ -315,7 +351,7 @@ function compressVideoLocally(inputPath, outputPath, targetSizeMB) {
                     '-c:v libx264',
                     `-b:v ${targetVideoBitrate}`,
                     '-preset ultrafast', 
-                    '-threads 2', // تحديد نواتين فقط لحماية رام 256MB من الامتلاء
+                    '-threads 2', 
                     '-c:a aac',
                     '-b:a 128k',
                     '-movflags +faststart'
@@ -362,7 +398,6 @@ async function downloadFileLocally(url, destPath) {
     });
 }
 
-// دالة إرسال الفيديو إلى واتساب مباشرة من القرص دون استهلاك الرام
 async function uploadVideoToWhatsApp(sender_psid, filePath) {
     if (!fs.existsSync(filePath)) {
         throw new Error(`الملف المطلوب إرساله لواتساب غير موجود: ${filePath}`);
@@ -378,7 +413,6 @@ async function sendTextMessage(sender_psid, text) {
     await sock.sendMessage(sender_psid, { text: text });
 }
 
-// تحويل واجهة الأزرار لتتناسب مع واتساب كنصوص
 async function sendButtonMessage(sender_psid, text, buttons) {
     let msg = `${text}\n\n`;
     buttons.forEach(b => {
@@ -387,7 +421,6 @@ async function sendButtonMessage(sender_psid, text, buttons) {
     await sock.sendMessage(sender_psid, { text: msg });
 }
 
-// تحويل واجهة الكاروسيل لتتناسب مع واتساب كنصوص
 async function sendCarouselMessage(sender_psid, elements, currentPage, searchQuery) {
     let msg = "✨ الفيديوهات المتاحة (انسخ الرابط وأرسله لي لاختيار الجودة):\n\n";
     elements.forEach((el, index) => {
