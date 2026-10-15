@@ -7,7 +7,7 @@ const { default: makeWASocket, DisconnectReason, initAuthCreds, BufferJSON, prot
 const pino = require('pino');
 const qrcode = require('qrcode');
 
-// استدعاء مكتبات الضغط
+// استدعاء مكتبات الضغط المحلي
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegStatic = require('ffmpeg-static');
 const ffprobeStatic = require('ffprobe-static');
@@ -19,12 +19,11 @@ const app = express();
 let currentQR = ''; 
 let isConnected = false; 
 
-// 🌟 ذاكرة البوت لتخزين نتائج البحث
+// ذاكرة البوت الذكية ونظام القفل
 const userSessions = new Map();
-// 🌟 نظام القفل (لمنع تضارب الأوامر)
 const userLocks = new Map();
 
-app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Awake and Running!'));
+app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Awake and Running (Premium Version)!'));
 
 app.get('/qr', (req, res) => {
     if (isConnected) {
@@ -41,13 +40,14 @@ app.get('/qr', (req, res) => {
             </html>
         `);
     } else {
-        res.send('<h2 style="text-align: center; margin-top: 50px;">⏳ جاري توليد الكود أو جلب الجلسة...</h2>');
+        res.send('<h2 style="text-align: center; margin-top: 50px;">⏳ جاري توليد الكود أو جلب الجلسة من Firebase...</h2>');
     }
 });
 
 const SCRAPER_API_KEY = "e52e3ecb8172c130934a150b2e7c5f22";
 const FIREBASE_DB_URL = "https://hamza-kr-default-rtdb.firebaseio.com/whatsapp_auth";
 
+// المحول الذكي لحفظ جلسة واتساب في Firebase
 async function useFirebaseAuthState() {
     const readData = async (path) => {
         try {
@@ -130,7 +130,12 @@ async function connectToWhatsApp() {
             auth: state,
             printQRInTerminal: false,
             logger: pino({ level: 'silent' }),
-            browser: ['WhatsApp Bot', 'Chrome', '1.0.0']
+            browser: ['WhatsApp Bot', 'Chrome', '1.0.0'],
+            
+            // 🌟 الحل الجذري للتأخير: إرسال نبضات كل 10 ثواني لمنع الشبكة من قطع الاتصال الصامت
+            keepAliveIntervalMs: 10000, 
+            markOnlineOnConnect: true,
+            syncFullHistory: false
         });
 
         sock.ev.on('creds.update', saveCreds);
@@ -168,6 +173,8 @@ async function connectToWhatsApp() {
                 isConnected = true;
                 currentQR = '';
                 console.log('✅ تم ربط واتساب بنجاح!');
+                // فرض حالة متصل دائماً
+                await sock.sendPresenceUpdate('available');
             }
         });
 
@@ -176,6 +183,11 @@ async function connectToWhatsApp() {
             const msg = messages[0];
             if (!msg.message) return;
             if (msg.key.fromMe) return;
+
+            // 🌟 تجاهل الرسائل القديمة المتراكمة (التي مر عليها أكثر من 60 ثانية)
+            if (msg.messageTimestamp && msg.messageTimestamp < Math.floor(Date.now() / 1000) - 60) {
+                return;
+            }
 
             const sender_psid = msg.key.remoteJid;
             
@@ -188,15 +200,13 @@ async function connectToWhatsApp() {
             userText = userText.trim();
 
             if (!userText) return;
-            console.log(`📩 رسالة من ${sender_psid}: "${userText}"`);
+            console.log(`📩 رسالة فورية من ${sender_psid}: "${userText}"`);
 
-            // 🌟 فحص ما إذا كان البوت مشغولاً مع هذا المستخدم
+            // فحص حالة القفل
             if (userLocks.get(sender_psid)) {
-                await sendTextMessage(sender_psid, "⏳ أنا أقوم بتنفيذ طلبك السابق حالياً... يرجى الانتظار حتى أنتهي لتجنب تضارب الأوامر!");
+                await sendTextMessage(sender_psid, "⏳ أنا أقوم بتنفيذ طلبك السابق حالياً... يرجى الانتظار!");
                 return;
             }
-
-            // قفل المحادثة لهذا المستخدم
             userLocks.set(sender_psid, true);
 
             try {
@@ -231,7 +241,6 @@ async function connectToWhatsApp() {
                 let errMsg = error ? error.message : "خطأ غير معروف";
                 console.error("⚠️ حدث خطأ:", errMsg);
             } finally {
-                // فتح القفل بعد انتهاء العمل سواء بنجاح أو بخطأ
                 userLocks.delete(sender_psid);
             }
         });
@@ -263,7 +272,7 @@ async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
             }
         }
         
-        await sendTextMessage(sender_psid, `🔍 استلمت طلبك! جاري البحث وتجهيز الصور...`);
+        await sendTextMessage(sender_psid, `🔍 استلمت طلبك! جاري تجهيز الصور فوراً...`);
 
         const response = await axios.get(`https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}`);
         const $ = cheerio.load(response.data);
@@ -378,13 +387,8 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
     } catch (error) {
         await sendTextMessage(sender_psid, `❌ حدث خطأ أثناء إرسال أو معالجة الفيديو.`);
     } finally {
-        if (fs.existsSync(originalPath)) {
-            fs.unlinkSync(originalPath);
-        }
-        if (fs.existsSync(compressedPath)) {
-            fs.unlinkSync(compressedPath);
-        }
-        // تنظيف جلسة الاختيارات بعد التحميل ليعود للبحث من جديد
+        if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
+        if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
         userSessions.delete(sender_psid);
     }
 }
@@ -422,7 +426,7 @@ async function sendTextMessage(sender_psid, text) {
     await sock.sendMessage(sender_psid, { text: text }); 
 }
 
-// 🌟 نبضات القلب: لإيقاظ السيرفر داخلياً كل 4 دقائق
+// نبضات القلب لإيقاظ السيرفر داخلياً
 const PORT = process.env.PORT ? process.env.PORT : 8080;
 app.listen(PORT, '0.0.0.0', () => { 
     console.log(`🚀 السيرفر يعمل على المنفذ ${PORT}`); 
