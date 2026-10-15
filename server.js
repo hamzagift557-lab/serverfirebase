@@ -1,4 +1,3 @@
-
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -7,7 +6,7 @@ const path = require('path');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 
-// استدعاء مكتبات الضغط المحلي الذكي
+// استدعاء مك.تبات الضغط المحلي الذكي
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegStatic = require('ffmpeg-static');
 const ffprobeStatic = require('ffprobe-static');
