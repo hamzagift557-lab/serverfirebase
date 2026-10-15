@@ -7,12 +7,11 @@ const { default: makeWASocket, DisconnectReason, initAuthCreds, BufferJSON, prot
 const pino = require('pino');
 const qrcode = require('qrcode');
 
-// استدعاء مكتبات الضغط المحلي الذكي
+// استدعاء مكتبات الضغط
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegStatic = require('ffmpeg-static');
 const ffprobeStatic = require('ffprobe-static');
 
-// تهيئة مسارات تشغيل FFmpeg
 ffmpeg.setFfmpegPath(ffmpegStatic);
 ffmpeg.setFfprobePath(ffprobeStatic.path);
 
@@ -20,10 +19,12 @@ const app = express();
 let currentQR = ''; 
 let isConnected = false; 
 
-// 🌟 ذاكرة البوت الذكية لتخزين نتائج البحث للمستخدمين
+// 🌟 ذاكرة البوت لتخزين نتائج البحث
 const userSessions = new Map();
+// 🌟 نظام القفل (لمنع تضارب الأوامر)
+const userLocks = new Map();
 
-app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Running (Premium Version)!'));
+app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Awake and Running!'));
 
 app.get('/qr', (req, res) => {
     if (isConnected) {
@@ -40,14 +41,13 @@ app.get('/qr', (req, res) => {
             </html>
         `);
     } else {
-        res.send('<h2 style="text-align: center; margin-top: 50px;">⏳ جاري توليد الكود أو جلب الجلسة من Firebase...</h2>');
+        res.send('<h2 style="text-align: center; margin-top: 50px;">⏳ جاري توليد الكود أو جلب الجلسة...</h2>');
     }
 });
 
 const SCRAPER_API_KEY = "e52e3ecb8172c130934a150b2e7c5f22";
 const FIREBASE_DB_URL = "https://hamza-kr-default-rtdb.firebaseio.com/whatsapp_auth";
 
-// المحول الذكي لحفظ جلسة واتساب في Firebase
 async function useFirebaseAuthState() {
     const readData = async (path) => {
         try {
@@ -154,13 +154,7 @@ async function connectToWhatsApp() {
                     if (lastDisconnect && lastDisconnect.error && lastDisconnect.error.message) {
                         errStr = String(lastDisconnect.error.message);
                     }
-                    let hasBadMac = errStr.includes('Bad MAC');
-                    let hasDecrypt = errStr.includes('decrypt');
-
-                    if (hasBadMac) {
-                        console.log('🔄 تلف في الجلسة. جاري مسحها لطلب كود جديد...');
-                        await clearSession();
-                    } else if (hasDecrypt) {
+                    if (errStr.includes('Bad MAC') || errStr.includes('decrypt')) {
                         console.log('🔄 تلف في الجلسة. جاري مسحها لطلب كود جديد...');
                         await clearSession();
                     }
@@ -196,6 +190,15 @@ async function connectToWhatsApp() {
             if (!userText) return;
             console.log(`📩 رسالة من ${sender_psid}: "${userText}"`);
 
+            // 🌟 فحص ما إذا كان البوت مشغولاً مع هذا المستخدم
+            if (userLocks.get(sender_psid)) {
+                await sendTextMessage(sender_psid, "⏳ أنا أقوم بتنفيذ طلبك السابق حالياً... يرجى الانتظار حتى أنتهي لتجنب تضارب الأوامر!");
+                return;
+            }
+
+            // قفل المحادثة لهذا المستخدم
+            userLocks.set(sender_psid, true);
+
             try {
                 let num = parseInt(userText);
                 let session = userSessions.get(sender_psid);
@@ -208,28 +211,28 @@ async function connectToWhatsApp() {
                     } else {
                         await sendTextMessage(sender_psid, "❌ خيار غير صالح. يرجى التأكد من الرقم.");
                     }
-                    return;
                 }
-
-                if (userText === 'التالي' && session && session.type === 'search') {
+                else if (userText === 'التالي' && session && session.type === 'search') {
                     await fetchAndSendVideos(sender_psid, session.page + 1, session.searchQuery);
-                    return;
                 }
-
-                let isHi = userText.toLowerCase() === 'hi';
-                if (userText === 'مرحبا') {
-                    await fetchAndSendVideos(sender_psid, 1, "");
-                } else if (isHi) {
-                    await fetchAndSendVideos(sender_psid, 1, "");
-                } else if (userText.startsWith('http')) {
-                    await sendTextMessage(sender_psid, "❌ عذراً، البوت يقبل أسماء البحث فقط وليس الروابط.");
-                } else {
-                    await fetchAndSendVideos(sender_psid, 1, userText);
+                else {
+                    let isHi = userText.toLowerCase() === 'hi';
+                    if (userText === 'مرحبا') {
+                        await fetchAndSendVideos(sender_psid, 1, "");
+                    } else if (isHi) {
+                        await fetchAndSendVideos(sender_psid, 1, "");
+                    } else if (userText.startsWith('http')) {
+                        await sendTextMessage(sender_psid, "❌ عذراً، البوت يقبل أسماء البحث فقط وليس الروابط.");
+                    } else {
+                        await fetchAndSendVideos(sender_psid, 1, userText);
+                    }
                 }
-
             } catch (error) {
                 let errMsg = error ? error.message : "خطأ غير معروف";
                 console.error("⚠️ حدث خطأ:", errMsg);
+            } finally {
+                // فتح القفل بعد انتهاء العمل سواء بنجاح أو بخطأ
+                userLocks.delete(sender_psid);
             }
         });
 
@@ -244,7 +247,6 @@ connectToWhatsApp();
 process.on('uncaughtException', () => {});
 process.on('unhandledRejection', () => {});
 
-// 🌟 دالة الجلب الاحترافية (صور + مدة فقط)
 async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
     try {
         let targetUrl = 'https://www.xvideos.com/';
@@ -261,15 +263,12 @@ async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
             }
         }
         
-        if (page === 1) {
-            await sendTextMessage(sender_psid, `🔍 جاري البحث وتجهيز الصور...`);
-        }
+        await sendTextMessage(sender_psid, `🔍 استلمت طلبك! جاري البحث وتجهيز الصور...`);
 
         const response = await axios.get(`https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}`);
         const $ = cheerio.load(response.data);
         let elements = [];
         
-        // جلب 5 فيديوهات فقط
         $('.thumb-block').toArray().slice(0, 5).forEach(element => {
             let link = $(element).find('.title a').attr('href');
             let durationText = $(element).find('.duration').text().trim();
@@ -304,17 +303,16 @@ async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
 
             await sendTextMessage(sender_psid, `✨ للتحميل: أرسل رقم الخيار (مثال: 1)\n🔄 للمزيد: أرسل كلمة "التالي"`);
         } else {
-            await sendTextMessage(sender_psid, "❌ لم أتمكن من العثور على نتائج.");
+            await sendTextMessage(sender_psid, "❌ لم أتمكن من العثور على نتائج. جرب كلمة أخرى.");
         }
     } catch (error) {
-        await sendTextMessage(sender_psid, `❌ حدث خطأ في النظام.`);
+        await sendTextMessage(sender_psid, `❌ حدث خطأ أثناء الاتصال بالموقع. يرجى المحاولة لاحقاً.`);
     }
 }
 
-// 🌟 دالة اختيار الجودة الاحترافية بالأرقام
 async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
     try {
-        await sendTextMessage(sender_psid, "⏳ جاري فحص الجودات...");
+        await sendTextMessage(sender_psid, "⏳ جاري فحص الجودات المتاحة لهذا الفيديو...");
         const response = await axios.get(`https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(videoUrl)}`);
         const html = response.data;
         let qualities = [];
@@ -351,33 +349,34 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
             });
             await sendTextMessage(sender_psid, msg);
         } else {
-            await sendTextMessage(sender_psid, "❌ خطأ في قراءة الفيديو.");
+            await sendTextMessage(sender_psid, "❌ لم أتمكن من العثور على روابط تحميل لهذا الفيديو.");
         }
     } catch (error) {
         await sendTextMessage(sender_psid, `❌ فشل في فحص الجودات.`);
     }
 }
 
-// محرك التحميل والضغط الذكي
 async function downloadAndCompressVideo(sender_psid, directUrl) {
     let originalPath = path.join('/tmp', `orig_${Date.now()}.mp4`);
     let compressedPath = path.join('/tmp', `comp_${Date.now()}.mp4`);
 
     try {
-        await sendTextMessage(sender_psid, "📥 جاري التحميل... يرجى الانتظار");
+        await sendTextMessage(sender_psid, "📥 جاري التحميل... يرجى الانتظار ولا ترسل أوامر أخرى حتى أنتهي.");
         await downloadFileLocally(directUrl, originalPath);
 
         const originalSizeMB = fs.statSync(originalPath).size / (1024 * 1024);
 
         if (originalSizeMB <= 60.0) {
+            await sendTextMessage(sender_psid, `🚀 جاري رفع الفيديو إليك الآن...`);
             await uploadVideoToWhatsApp(sender_psid, originalPath);
         } else {
-            await sendTextMessage(sender_psid, `⚠️ الفيديو كبير، جاري ضغطه ليتناسب مع واتساب...`);
+            await sendTextMessage(sender_psid, `⚠️ الفيديو حجمه كبير (${originalSizeMB.toFixed(1)}MB)، جاري ضغطه ليتناسب مع واتساب...`);
             await compressVideoLocally(originalPath, compressedPath, 58.0);
+            await sendTextMessage(sender_psid, `🚀 تم الضغط بنجاح! جاري الإرسال...`);
             await uploadVideoToWhatsApp(sender_psid, compressedPath);
         }
     } catch (error) {
-        await sendTextMessage(sender_psid, `❌ حدث خطأ أثناء إرسال الفيديو.`);
+        await sendTextMessage(sender_psid, `❌ حدث خطأ أثناء إرسال أو معالجة الفيديو.`);
     } finally {
         if (fs.existsSync(originalPath)) {
             fs.unlinkSync(originalPath);
@@ -385,6 +384,8 @@ async function downloadAndCompressVideo(sender_psid, directUrl) {
         if (fs.existsSync(compressedPath)) {
             fs.unlinkSync(compressedPath);
         }
+        // تنظيف جلسة الاختيارات بعد التحميل ليعود للبحث من جديد
+        userSessions.delete(sender_psid);
     }
 }
 
@@ -414,12 +415,20 @@ async function downloadFileLocally(url, destPath) {
 
 async function uploadVideoToWhatsApp(sender_psid, filePath) {
     await sock.sendMessage(sender_psid, { video: { url: filePath }, mimetype: 'video/mp4' });
-    await sendTextMessage(sender_psid, "✅ اكتمل التحميل بنجاح!");
+    await sendTextMessage(sender_psid, "✅ اكتمل التحميل بنجاح! يسعدني خدمتك مجدداً.");
 }
 
 async function sendTextMessage(sender_psid, text) { 
     await sock.sendMessage(sender_psid, { text: text }); 
 }
 
+// 🌟 نبضات القلب: لإيقاظ السيرفر داخلياً كل 4 دقائق
 const PORT = process.env.PORT ? process.env.PORT : 8080;
-app.listen(PORT, '0.0.0.0', () => { console.log(`🚀 السيرفر يعمل على المنفذ ${PORT}`); });
+app.listen(PORT, '0.0.0.0', () => { 
+    console.log(`🚀 السيرفر يعمل على المنفذ ${PORT}`); 
+    setInterval(async () => {
+        try {
+            await axios.get(`http://localhost:${PORT}/`);
+        } catch (e) {}
+    }, 4 * 60 * 1000);
+});
