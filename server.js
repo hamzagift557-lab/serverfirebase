@@ -6,7 +6,7 @@ const path = require('path');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 
-// استدعاء مك.تبات الضغط المحلي الذكي
+// استدعاء مكتبات الضغط المحلي الذكي
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegStatic = require('ffmpeg-static');
 const ffprobeStatic = require('ffprobe-static');
@@ -22,18 +22,18 @@ app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Running!'));
 // مفتاح ScraperAPI الخاص بك
 const SCRAPER_API_KEY = "e52e3ecb8172c130934a150b2e7c5f22";
 
-// إعداد عميل واتساب مع حفظ الجلسة لعدم مسح الكود كل مرة
+// إعداد عميل واتساب مع حفظ الجلسة وإزالة الخيارات المسببة لـ SIGTRAP
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
+        headless: true,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
-            '--no-zygote',
-            '--single-process',
             '--disable-gpu'
         ]
     }
@@ -48,6 +48,15 @@ client.on('qr', (qr) => {
 // 2. تأكيد الاتصال
 client.on('ready', () => {
     console.log('✅ تم ربط واتساب بنجاح! البوت الآن جاهز لاستقبال الرسائل.');
+});
+
+// طباعة أي خطأ مصادقة أو انقطاع اتصال بشكل حقيقي
+client.on('auth_failure', msg => {
+    console.error('❌ فشل المصادقة في واتساب (الرد الأصلي):', msg);
+});
+
+client.on('disconnected', (reason) => {
+    console.error('⚠️ تم قطع اتصال واتساب (السبب الأصلي):', reason);
 });
 
 // 3. مسار استقبال الرسائل من واتساب
@@ -86,8 +95,15 @@ client.on('message', async msg => {
     }
 });
 
-// تشغيل العميل
-client.initialize();
+// تشغيل العميل مع التقاط وطباعة الخطأ الأصلي الكامل في حال الفشل
+client.initialize().catch(err => {
+    console.error("❌ خطأ حقيقي أثناء تشغيل متصفح واتساب (client.initialize):", err.stack || err.message || err);
+});
+
+// حماية السيرفر من الانهيار وطباعة تفاصيل أي خطأ غير معالج بدقة
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('⚠️ خطأ غير معالج (Unhandled Rejection - الرد الأصلي):', reason?.stack || reason?.message || reason);
+});
 
 // دالة جلب الفيديوهات (مع دعم البحث)
 async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
@@ -120,7 +136,7 @@ async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
             if (elements.length >= 9) break; 
 
             let element = videoElements[i];
-            let title = $(element).find('.title a').attr('title') || $(element).find('.title a').text().trim();
+            let title = $(element).find('.title a').attr('title') \vert{}\vert{}$(element).find('.title a').text().trim();
             let link = $(element).find('.title a').attr('href');
             let duration = $(element).find('.duration').text().trim();
 
