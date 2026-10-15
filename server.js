@@ -20,11 +20,14 @@ const app = express();
 let currentQR = ''; 
 let isConnected = false; 
 
-app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Running with Firebase Auth!'));
+// 🌟 ذاكرة البوت الذكية لتخزين نتائج البحث للمستخدمين
+const userSessions = new Map();
+
+app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Running (Premium Version)!'));
 
 app.get('/qr', (req, res) => {
     if (isConnected) {
-        res.send('<h2 style="color: green; text-align: center; margin-top: 50px;">✅ البوت متصل بواتساب بنجاح! لا حاجة لمسح الكود.</h2>');
+        res.send('<h2 style="color: green; text-align: center; margin-top: 50px;">✅ البوت متصل بواتساب بنجاح!</h2>');
     } else if (currentQR) {
         res.send(`
             <html>
@@ -44,7 +47,7 @@ app.get('/qr', (req, res) => {
 const SCRAPER_API_KEY = "e52e3ecb8172c130934a150b2e7c5f22";
 const FIREBASE_DB_URL = "https://hamza-kr-default-rtdb.firebaseio.com/whatsapp_auth";
 
-// 🌟 المحول الذكي لحفظ جلسة واتساب في Firebase (البديل لمساحات التخزين)
+// المحول الذكي لحفظ جلسة واتساب في Firebase
 async function useFirebaseAuthState() {
     const readData = async (path) => {
         try {
@@ -78,12 +81,9 @@ async function useFirebaseAuthState() {
                 get: async (type, ids) => {
                     const data = {};
                     await Promise.all(ids.map(async id => {
-                        // تشفير الـ ID لمنع أخطاء Firebase بسبب الرموز الممنوعة
                         const safeId = encodeURIComponent(id).replace(/\./g, '%2E');
                         let value = await readData(`keys/${type}-${safeId}`);
-                        if (type === 'app-state-sync-key' && value) {
-                            value = proto.Message.AppStateSyncKeyData.fromObject(value);
-                        }
+                        if (type === 'app-state-sync-key' && value) value = proto.Message.AppStateSyncKeyData.fromObject(value);
                         data[id] = value;
                     }));
                     return data;
@@ -121,8 +121,7 @@ async function connectToWhatsApp() {
             auth: state,
             printQRInTerminal: false,
             logger: pino({ level: 'silent' }),
-            browser: ['WhatsApp Bot', 'Chrome', '1.0.0'],
-            generateHighQualityLinkPreview: true
+            browser: ['WhatsApp Bot', 'Chrome', '1.0.0']
         });
 
         sock.ev.on('creds.update', saveCreds);
@@ -144,21 +143,19 @@ async function connectToWhatsApp() {
                 if (shouldReconnect) {
                     const errStr = String(lastDisconnect?.error?.message || '');
                     if (errStr.includes('Bad MAC') || errStr.includes('decrypt')) {
-                        console.log('🔄 تلف في الجلسة. جاري مسحها من Firebase لطلب كود جديد...');
+                        console.log('🔄 تلف في الجلسة. جاري مسحها لطلب كود جديد...');
                         await clearSession();
-                    } else {
-                        console.log('🔄 جاري إعادة الاتصال بواتساب...');
                     }
                     setTimeout(connectToWhatsApp, 3000);
                 } else {
-                    console.log('❌ تم تسجيل الخروج. جاري مسح الجلسة من Firebase...');
+                    console.log('❌ تم تسجيل الخروج. جاري مسح الجلسة...');
                     await clearSession();
                     connectToWhatsApp();
                 }
             } else if (connection === 'open') {
                 isConnected = true;
                 currentQR = '';
-                console.log('✅ تم ربط واتساب بنجاح بفضل Firebase!');
+                console.log('✅ تم ربط واتساب بنجاح!');
             }
         });
 
@@ -171,22 +168,41 @@ async function connectToWhatsApp() {
             const userText = (msg.message.conversation || msg.message.extendedTextMessage?.text || "").trim();
 
             if (!userText) return;
+            console.log(`📩 رسالة من ${sender_psid}: "${userText}"`);
 
             try {
-                if (userText.startsWith('LOAD_MORE|')) {
-                    let parts = userText.split('|');
-                    await fetchAndSendVideos(sender_psid, parseInt(parts[1]), parts[2] ? parts[2] : "");
-                } else if (userText.startsWith('http') && (userText.includes('mp4_sd.mp4') || userText.includes('secure='))) {
-                    await downloadAndCompressVideo(sender_psid, userText);
-                } else if (userText.startsWith('http') && userText.includes('xvideos.com')) {
-                    await fetchQualitiesAndSendOptions(sender_psid, userText);
-                } else if (userText === 'مرحبا' || userText.toLowerCase() === 'hi') {
+                let num = parseInt(userText);
+                let session = userSessions.get(sender_psid);
+
+                // 1. إذا أرسل المستخدم رقماً للاختيار (نظام الذاكرة الذكي)
+                if (!isNaN(num) && num >= 1 && num <= 5 && session) {
+                    if (session.type === 'search' && session.urls[num - 1]) {
+                        await fetchQualitiesAndSendOptions(sender_psid, session.urls[num - 1]);
+                    } else if (session.type === 'quality' && session.qualities[num - 1]) {
+                        await downloadAndCompressVideo(sender_psid, session.qualities[num - 1].url);
+                    } else {
+                        await sendTextMessage(sender_psid, "❌ خيار غير صالح. يرجى التأكد من الرقم.");
+                    }
+                    return;
+                }
+
+                // 2. إذا طلب الصفحة التالية
+                if (userText === 'التالي' && session && session.type === 'search') {
+                    await fetchAndSendVideos(sender_psid, session.page + 1, session.searchQuery);
+                    return;
+                }
+
+                // 3. الأوامر العادية والبحث
+                if (userText === 'مرحبا' || userText.toLowerCase() === 'hi') {
                     await fetchAndSendVideos(sender_psid, 1, "");
+                } else if (userText.startsWith('http')) {
+                    await sendTextMessage(sender_psid, "❌ عذراً، البوت يقبل أسماء البحث فقط وليس الروابط.");
                 } else {
                     await fetchAndSendVideos(sender_psid, 1, userText);
                 }
+
             } catch (error) {
-                console.error("⚠️ حدث خطأ أثناء معالجة الرسالة:", error?.message);
+                console.error("⚠️ حدث خطأ:", error?.message);
             }
         });
 
@@ -200,33 +216,57 @@ connectToWhatsApp();
 process.on('uncaughtException', () => {});
 process.on('unhandledRejection', () => {});
 
-// باقي الدوال (جلب الفيديوهات والضغط) 
+// 🌟 دالة الجلب الاحترافية (صور + مدة فقط)
 async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
     try {
         let targetUrl = searchQuery !== "" 
             ? `https://www.xvideos.com/?k=${encodeURIComponent(searchQuery)}${page - 1 > 0 ? '&p=' + (page - 1) : ''}` 
             : (page === 1 ? 'https://www.xvideos.com/' : `https://www.xvideos.com/new/${page - 1}/`);
         
-        if (page === 1 && searchQuery !== "") await sendTextMessage(sender_psid, `🔍 جاري البحث عن: ${searchQuery}...`);
+        if (page === 1) await sendTextMessage(sender_psid, `🔍 جاري البحث وتجهيز الصور...`);
 
         const response = await axios.get(`https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}`);
         const $ = cheerio.load(response.data);
         let elements = [];
         
-        $('.thumb-block').toArray().slice(0, 9).forEach(element => {
-            let title = $(element).find('.title a').attr('title') \vert{}\vert{}$(element).find('.title a').text().trim();
+        // جلب 5 فيديوهات فقط كما طلبت
+        $('.thumb-block').toArray().slice(0, 5).forEach(element => {
             let link = $(element).find('.title a').attr('href');
-            let duration = $(element).find('.duration').text().trim();
-            if (title && link) elements.push({ title: title.substring(0, 75) + "..", subtitle: duration ? `المدة: ${duration} ⏱️` : "", link: link.startsWith('http') ? link : 'https://www.xvideos.com' + link });
+            let duration = $(element).find('.duration').text().trim() || "غير محدد";
+            let imgUrl = $(element).find('.thumb img').attr('data-src') \vert{}\vert{}$(element).find('.thumb img').attr('src');
+            
+            if (link && imgUrl) {
+                elements.push({
+                    link: link.startsWith('http') ? link : 'https://www.xvideos.com' + link,
+                    duration: duration,
+                    image: imgUrl
+                });
+            }
         });
 
-        if (elements.length > 0) await sendCarouselMessage(sender_psid, elements, page, searchQuery);
-        else await sendTextMessage(sender_psid, "❌ لم أتمكن من العثور على فيديوهات.");
+        if (elements.length > 0) {
+            // حفظ الروابط في الذاكرة المؤقتة
+            userSessions.set(sender_psid, { type: 'search', urls: elements.map(e => e.link), page, searchQuery });
+
+            // إرسال الصور واحدة تلو الأخرى بشكل احترافي
+            for (let i = 0; i < elements.length; i++) {
+                await sock.sendMessage(sender_psid, {
+                    image: { url: elements[i].image },
+                    caption: `🎬 خيار رقم [ ${i + 1} ]\n⏱️ المدة: ${elements[i].duration}`
+                });
+            }
+
+            // إرسال رسالة التوجيه
+            await sendTextMessage(sender_psid, `✨ للتحميل: أرسل رقم الخيار (مثال: 1)\n🔄 للمزيد: أرسل كلمة "التالي"`);
+        } else {
+            await sendTextMessage(sender_psid, "❌ لم أتمكن من العثور على نتائج.");
+        }
     } catch (error) {
-        await sendTextMessage(sender_psid, `❌ خطأ في الجلب.`);
+        await sendTextMessage(sender_psid, `❌ حدث خطأ في النظام.`);
     }
 }
 
+// 🌟 دالة اختيار الجودة الاحترافية بالأرقام
 async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
     try {
         await sendTextMessage(sender_psid, "⏳ جاري فحص الجودات...");
@@ -237,44 +277,55 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoUrl) {
         let matchLow = html.match(/setVideoUrlLow\('([^']+)'\)/);
         let matchHigh = html.match(/setVideoUrlHigh\('([^']+)'\)/);
 
-        if (matchLow && matchLow[1]) qualities.push({ label: "منخفضة", url: matchLow[1] });
-        if (matchHigh && matchHigh[1]) qualities.push({ label: "عالية", url: matchHigh[1] });
+        if (matchLow && matchLow[1]) qualities.push({ label: "جودة منخفضة", url: matchLow[1] });
+        if (matchHigh && matchHigh[1]) qualities.push({ label: "جودة عالية", url: matchHigh[1] });
 
-        let buttons = [];
+        let sessionQualities = [];
         for (let q of qualities) {
             try {
                 const headRes = await axios.head(q.url, { httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false }) });
                 let sizeMB = headRes.headers['content-length'] ? (headRes.headers['content-length'] / (1024 * 1024)).toFixed(1) : "?";
-                buttons.push({ title: `📥 ${q.label} (${sizeMB}M)`, payload: q.url });
+                sessionQualities.push({ label: q.label, url: q.url, sizeMB: sizeMB });
             } catch (e) {}
         }
-        if (buttons.length > 0) await sendButtonMessage(sender_psid, "✅ تم العثور على الجودات. (انسخ رابط الجودة للتحميل):", buttons);
+
+        if (sessionQualities.length > 0) {
+            // حفظ الجودات في الذاكرة لاختيارها بالرقم
+            userSessions.set(sender_psid, { type: 'quality', qualities: sessionQualities });
+            
+            let msg = "✅ الجودات المتاحة. أرسل رقم الجودة للتحميل:\n\n";
+            sessionQualities.forEach((q, index) => {
+                msg += `[ ${index + 1} ] 📥 ${q.label} (الحجم: ${q.sizeMB}M)\n`;
+            });
+            await sendTextMessage(sender_psid, msg);
+        } else {
+            await sendTextMessage(sender_psid, "❌ خطأ في قراءة الفيديو.");
+        }
     } catch (error) {
-        await sendTextMessage(sender_psid, `❌ خطأ في فحص الجودات.`);
+        await sendTextMessage(sender_psid, `❌ فشل في فحص الجودات.`);
     }
 }
 
+// محرك التحميل والضغط الذكي
 async function downloadAndCompressVideo(sender_psid, directUrl) {
     let originalPath = path.join('/tmp', `orig_${Date.now()}.mp4`);
     let compressedPath = path.join('/tmp', `comp_${Date.now()}.mp4`);
 
     try {
-        await sendTextMessage(sender_psid, "📥 جاري تحميل الفيديو...");
+        await sendTextMessage(sender_psid, "📥 جاري التحميل... يرجى الانتظار");
         await downloadFileLocally(directUrl, originalPath);
 
         const originalSizeMB = fs.statSync(originalPath).size / (1024 * 1024);
 
         if (originalSizeMB <= 60.0) {
-            await sendTextMessage(sender_psid, `🚀 الحجم مناسب (${originalSizeMB.toFixed(1)} MB)! جاري رفعه...`);
             await uploadVideoToWhatsApp(sender_psid, originalPath);
         } else {
-            await sendTextMessage(sender_psid, `⚠️ الحجم (${originalSizeMB.toFixed(1)} MB) كبير. جاري ضغطه...`);
+            await sendTextMessage(sender_psid, `⚠️ الفيديو كبير، جاري ضغطه ليتناسب مع واتساب...`);
             await compressVideoLocally(originalPath, compressedPath, 58.0);
-            await sendTextMessage(sender_psid, `🚀 نجح الضغط! جاري الإرسال...`);
             await uploadVideoToWhatsApp(sender_psid, compressedPath);
         }
     } catch (error) {
-        await sendTextMessage(sender_psid, `❌ خطأ في التحميل.`);
+        await sendTextMessage(sender_psid, `❌ حدث خطأ أثناء إرسال الفيديو.`);
     } finally {
         if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
         if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
@@ -305,18 +356,11 @@ async function downloadFileLocally(url, destPath) {
 
 async function uploadVideoToWhatsApp(sender_psid, filePath) {
     await sock.sendMessage(sender_psid, { video: { url: filePath }, mimetype: 'video/mp4' });
+    await sendTextMessage(sender_psid, "✅ اكتمل التحميل بنجاح!");
 }
 
-async function sendTextMessage(sender_psid, text) { await sock.sendMessage(sender_psid, { text: text }); }
-async function sendButtonMessage(sender_psid, text, buttons) {
-    let msg = `${text}\n\n`; buttons.forEach(b => msg += `✨ ${b.title}\n🔗 ${b.payload}\n\n`);
-    await sock.sendMessage(sender_psid, { text: msg });
-}
-async function sendCarouselMessage(sender_psid, elements, currentPage, searchQuery) {
-    let msg = "✨ الفيديوهات المتاحة (انسخ الرابط وأرسله):\n\n";
-    elements.forEach((el, index) => msg += `🎬 ${index + 1}. ${el.title}\n${el.subtitle}\n🔗 ${el.link}\n\n`);
-    msg += `🔄 للمزيد أرسل:\nLOAD_MORE|${currentPage + 1}|${searchQuery}`;
-    await sock.sendMessage(sender_psid, { text: msg });
+async function sendTextMessage(sender_psid, text) { 
+    await sock.sendMessage(sender_psid, { text: text }); 
 }
 
 const PORT = process.env.PORT || 8080;
