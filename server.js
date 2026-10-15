@@ -3,7 +3,7 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const fs = require('fs');
 const path = require('path');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, initAuthCreds, BufferJSON, proto } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcode = require('qrcode');
 
@@ -20,7 +20,7 @@ const app = express();
 let currentQR = ''; 
 let isConnected = false; 
 
-app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Running!'));
+app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Running with Firebase Auth!'));
 
 app.get('/qr', (req, res) => {
     if (isConnected) {
@@ -37,22 +37,92 @@ app.get('/qr', (req, res) => {
             </html>
         `);
     } else {
-        res.send('<h2 style="text-align: center; margin-top: 50px;">⏳ جاري توليد الكود...</h2>');
+        res.send('<h2 style="text-align: center; margin-top: 50px;">⏳ جاري توليد الكود أو جلب الجلسة من Firebase...</h2>');
     }
 });
 
 const SCRAPER_API_KEY = "e52e3ecb8172c130934a150b2e7c5f22";
+const FIREBASE_DB_URL = "https://hamza-kr-default-rtdb.firebaseio.com/whatsapp_auth";
+
+// 🌟 المحول الذكي لحفظ جلسة واتساب في Firebase (البديل لمساحات التخزين)
+async function useFirebaseAuthState() {
+    const readData = async (path) => {
+        try {
+            const res = await axios.get(`${FIREBASE_DB_URL}/${path}.json`);
+            if (res.data) return JSON.parse(JSON.stringify(res.data), BufferJSON.reviver);
+            return null;
+        } catch (e) { return null; }
+    };
+
+    const writeData = async (path, data) => {
+        try {
+            const str = JSON.stringify(data, BufferJSON.replacer);
+            await axios.put(`${FIREBASE_DB_URL}/${path}.json`, JSON.parse(str));
+        } catch (e) {}
+    };
+
+    const removeData = async (path) => {
+        try { await axios.delete(`${FIREBASE_DB_URL}/${path}.json`); } catch (e) {}
+    };
+
+    let creds = await readData('creds');
+    if (!creds) {
+        creds = initAuthCreds();
+        await writeData('creds', creds);
+    }
+
+    return {
+        state: {
+            creds,
+            keys: {
+                get: async (type, ids) => {
+                    const data = {};
+                    await Promise.all(ids.map(async id => {
+                        // تشفير الـ ID لمنع أخطاء Firebase بسبب الرموز الممنوعة
+                        const safeId = encodeURIComponent(id).replace(/\./g, '%2E');
+                        let value = await readData(`keys/${type}-${safeId}`);
+                        if (type === 'app-state-sync-key' && value) {
+                            value = proto.Message.AppStateSyncKeyData.fromObject(value);
+                        }
+                        data[id] = value;
+                    }));
+                    return data;
+                },
+                set: async (data) => {
+                    const tasks = [];
+                    for (const category in data) {
+                        for (const id in data[category]) {
+                            const value = data[category][id];
+                            const safeId = encodeURIComponent(id).replace(/\./g, '%2E');
+                            const keyPath = `keys/${category}-${safeId}`;
+                            if (value) tasks.push(writeData(keyPath, value));
+                            else tasks.push(removeData(keyPath));
+                        }
+                    }
+                    await Promise.all(tasks);
+                }
+            }
+        },
+        saveCreds: () => writeData('creds', creds),
+        clearSession: async () => {
+            try { await axios.delete(`${FIREBASE_DB_URL}.json`); } catch (e) {}
+        }
+    };
+}
+
 let sock;
 
 async function connectToWhatsApp() {
     try {
-        const { state, saveCreds } = await useMultiFileAuthState('/app/auth_info_baileys');
+        console.log('🔄 جاري جلب جلسة واتساب من Firebase...');
+        const { state, saveCreds, clearSession } = await useFirebaseAuthState();
 
         sock = makeWASocket({
             auth: state,
             printQRInTerminal: false,
             logger: pino({ level: 'silent' }),
-            browser: ['WhatsApp Bot', 'Chrome', '1.0.0']
+            browser: ['WhatsApp Bot', 'Chrome', '1.0.0'],
+            generateHighQualityLinkPreview: true
         });
 
         sock.ev.on('creds.update', saveCreds);
@@ -72,17 +142,23 @@ async function connectToWhatsApp() {
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                 
                 if (shouldReconnect) {
-                    console.log('🔄 جاري إعادة الاتصال بواتساب...');
+                    const errStr = String(lastDisconnect?.error?.message || '');
+                    if (errStr.includes('Bad MAC') || errStr.includes('decrypt')) {
+                        console.log('🔄 تلف في الجلسة. جاري مسحها من Firebase لطلب كود جديد...');
+                        await clearSession();
+                    } else {
+                        console.log('🔄 جاري إعادة الاتصال بواتساب...');
+                    }
                     setTimeout(connectToWhatsApp, 3000);
                 } else {
-                    console.log('❌ تم تسجيل الخروج. يجب مسح الكود من جديد.');
-                    fs.rmSync('/app/auth_info_baileys', { recursive: true, force: true });
+                    console.log('❌ تم تسجيل الخروج. جاري مسح الجلسة من Firebase...');
+                    await clearSession();
                     connectToWhatsApp();
                 }
             } else if (connection === 'open') {
                 isConnected = true;
                 currentQR = '';
-                console.log('✅ تم ربط واتساب بنجاح!');
+                console.log('✅ تم ربط واتساب بنجاح بفضل Firebase!');
             }
         });
 
@@ -121,20 +197,10 @@ async function connectToWhatsApp() {
 
 connectToWhatsApp();
 
-// 🌟 نظام الحماية الجديد: مسح الجلسة التالفة تلقائياً عند ظهور خطأ Bad MAC
-function handleSessionCorruption(err) {
-    const errorStr = String(err?.stack || err?.message || err);
-    if (errorStr.includes('Bad MAC') || errorStr.includes('decrypt message')) {
-        console.log('🔄 اكتشاف تلف في جلسة واتساب. جاري مسح الجلسة وإعادة التشغيل...');
-        try { fs.rmSync('/app/auth_info_baileys', { recursive: true, force: true }); } catch(e){}
-        process.exit(1); 
-    }
-}
+process.on('uncaughtException', () => {});
+process.on('unhandledRejection', () => {});
 
-process.on('uncaughtException', (err) => { handleSessionCorruption(err); });
-process.on('unhandledRejection', (reason) => { handleSessionCorruption(reason); });
-
-// باقي الدوال (جلب الفيديوهات والضغط) تبقى كما هي تماماً
+// باقي الدوال (جلب الفيديوهات والضغط) 
 async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
     try {
         let targetUrl = searchQuery !== "" 
