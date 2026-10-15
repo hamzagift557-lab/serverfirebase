@@ -120,7 +120,7 @@ async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
             if (elements.length >= 9) break; 
 
             let element = videoElements[i];
-            let title = $(element).find('.title a').attr('title') \vert{}\vert{}$(element).find('.title a').text().trim();
+            let title = $(element).find('.title a').attr('title') || $(element).find('.title a').text().trim();
             let link = $(element).find('.title a').attr('href');
             let duration = $(element).find('.duration').text().trim();
 
