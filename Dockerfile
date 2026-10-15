@@ -2,8 +2,9 @@ FROM node:20-bookworm
 
 WORKDIR /app
 
-# تثبيت مكتبات النظام اللازمة لتشغيل Chrome وPuppeteer
+# تثبيت متصفح Chromium الرسمي ومكتبات النظام اللازمة لتشغيل Puppeteer
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    chromium \
     ca-certificates \
     fonts-liberation \
     libasound2 \
@@ -41,6 +42,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# إخبار Puppeteer بعدم تحميل كروم خارجي واستخدام كروم النظام المستقر
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # نسخ ملفات تعريف المشروع
 COPY package*.json ./
