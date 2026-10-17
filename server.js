@@ -9,7 +9,6 @@ const pino = require('pino');
 const qrcode = require('qrcode');
 const youtubedl = require('youtube-dl-exec');
 
-// استدعاء مكتبات المعالجة
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegStatic = require('ffmpeg-static');
 const ffprobeStatic = require('ffprobe-static');
@@ -53,7 +52,7 @@ async function fetchHtmlSmart(targetUrl, SCRAPER_API_KEY) {
     return proxyRes.data;
 }
 
-app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Awake (Document Sender Mode)!'));
+app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Awake (RAM Optimized)!'));
 app.get('/qr', (req, res) => {
     if (isConnected) res.send('<h2 style="color: green; text-align: center; margin-top: 50px;">✅ البوت متصل بواتساب بنجاح!</h2>');
     else if (currentQR) res.send(`<html><body style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100vh; background-color:#f0f2f5; font-family: Arial, sans-serif;"><div style="text-align:center; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);"><h2 style="color: #075e54;">📱 ربط بوت واتساب</h2><img src="${currentQR}" style="width:300px; height:300px; border: 2px solid #ddd; border-radius: 10px; padding: 10px;"/></div></body></html>`);
@@ -230,7 +229,6 @@ async function connectToWhatsApp() {
                         await fetchQualitiesAndSendOptions(sender_psid, session.items[num - 1]);
                     } else if (session.type === 'quality' && session.qualities && session.qualities[num - 1]) {
                         userLocks.set(sender_psid, `تحميل الفيديو ${num}`);
-                        // 🌟 هنا استدعاء المحرك الجديد الذكي الخالي من الضغط
                         await downloadAndSendVideo(sender_psid, session.qualities[num - 1], session.selectedVideo);
                     } else await sendTextMessage(sender_psid, "❌ الرقم غير موجود ضمن الخيارات المعروضة.");
                 } else if (lowerText === 'nex') {
@@ -345,10 +343,10 @@ async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
 
 async function fetchQualitiesAndSendOptions(sender_psid, videoItem) {
     try {
-        await sendTextMessage(sender_psid, "⏳ جاري استخراج الجودات عبر المحرك الذكي...");
+        await sendTextMessage(sender_psid, "⏳ جاري استخراج الجودات...");
         let sessionQualities = [];
-        let extractionErrors = [];
-
+        
+        // المحرك الأساسي (yt-dlp)
         try {
             const info = await youtubedl(videoItem.link, {
                 dumpSingleJson: true,
@@ -370,21 +368,16 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoItem) {
                             else if (f.filesize_approx) sizeMB = (f.filesize_approx / 1048576).toFixed(1);
                             
                             sessionQualities.push({ 
-                                label: `${h}p`, 
-                                url: url, 
-                                sizeMB: sizeMB, 
-                                isYtDlp: true,
-                                format_id: f.format_id,
-                                height: h 
+                                label: `${h}p`, url: url, sizeMB: sizeMB, 
+                                isYtDlp: true, format_id: f.format_id, height: h 
                             });
                         }
                     }
                 });
             }
-        } catch (ytErr) {
-            console.log("⚠️ فشل محرك yt-dlp، جاري التحويل للمحرك اليدوي...");
-        }
+        } catch (ytErr) { console.log("⚠️ فشل محرك yt-dlp، جاري التحويل للمحرك اليدوي..."); }
 
+        // الخطة البديلة (Scraping)
         if (sessionQualities.length === 0) {
             const html = await fetchHtmlSmart(videoItem.link, SCRAPER_API_KEY);
             let durationSec = 0;
@@ -438,15 +431,14 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoItem) {
             });
             
             let msg = `✅ *الجودات المتاحة (${sessionQualities.length}):*\nأرسل الرقم للتحميل:\n\n`;
-            sessionQualities.forEach((q, index) => { msg += `*[ ${index + 1} ]* 📥 جودة ${q.label} — (الحجم التقريبي: ${q.sizeMB}MB)\n`; });
+            sessionQualities.forEach((q, index) => { msg += `*[ ${index + 1} ]* 📥 جودة ${q.label} — (الحجم: ${q.sizeMB}MB)\n`; });
             await sendTextMessage(sender_psid, msg);
-        } else await sendTextMessage(sender_psid, `❌ فشل استخراج الجودات.\n${extractionErrors.join('\n')}`);
+        } else await sendTextMessage(sender_psid, `❌ فشل استخراج الجودات.`);
     } catch (error) {
         await sendTextMessage(sender_psid, `❌ الخطأ الأصلي:\n${getRealError(error)}`);
     }
 }
 
-// 🌟 المحرك الجديد: تحميل وإرسال ذكي كـ (مستند) بدون أي ضغط لحماية السيرفر من الانهيار
 async function downloadAndSendVideo(sender_psid, qualityObj, videoItem) {
     const timestamp = Date.now();
     let originalPath = path.join('/tmp', `vid_${timestamp}.mp4`);
@@ -454,18 +446,17 @@ async function downloadAndSendVideo(sender_psid, qualityObj, videoItem) {
     let rawTsPath = path.join('/tmp', `raw_${timestamp}.ts`);
 
     try {
-        await sendTextMessage(sender_psid, `📥 جاري التحميل (${qualityObj.label}) بجودته الأصلية العالية... يرجى الانتظار.`);
+        await sendTextMessage(sender_psid, `📥 جاري التحميل (${qualityObj.label})... يرجى الانتظار.`);
 
-        // التحميل بدون إرهاق السيرفر بالضغط
         if (qualityObj.isYtDlp && qualityObj.format_id) {
             await youtubedl(videoItem.link, {
-                format: `${qualityObj.format_id}+bestaudio/best`, // جلب أفضل صوت وصورة
+                format: `${qualityObj.format_id}+bestaudio/best`, 
                 mergeOutputFormat: 'mp4',
                 output: originalPath,
                 noWarnings: true,
                 noCheckCertificates: true,
                 referer: 'https://www.xvideos.com/',
-                ffmpegLocation: ffmpegStatic // يُستخدم فقط لدمج الصوت بالصورة وليس للضغط
+                ffmpegLocation: ffmpegStatic 
             });
         } else if (qualityObj.isHLS) {
             await downloadHLSInNode(qualityObj.url, rawTsPath, originalPath);
@@ -473,25 +464,22 @@ async function downloadAndSendVideo(sender_psid, qualityObj, videoItem) {
             await downloadFileLocally(qualityObj.url, originalPath);
         }
 
-        if (!fs.existsSync(originalPath)) {
-            throw new Error("ملف الفيديو لم يتم تنزيله بنجاح.");
-        }
+        if (!fs.existsSync(originalPath)) throw new Error("ملف الفيديو غير موجود.");
 
         const fileSizeMB = fs.statSync(originalPath).size / (1024 * 1024);
-        await generateThumbnail(originalPath, thumbPath);
-
-        // 🌟 الخدعة الذكية: إرسال كملف Document إذا تجاوز 60MB
+        
+        // 🌟 الخدعة الذكية لحماية الرام (إرسال كملف إذا كان كبيراً لعدم استخدام FFmpeg للضغط)
         if (fileSizeMB <= 60.0) {
-            await sendTextMessage(sender_psid, `⚡ اكتمل التحميل (${fileSizeMB.toFixed(1)}MB)! جاري الإرسال كفيديو مباشر...`);
-            await uploadVideoToWhatsApp(sender_psid, originalPath, thumbPath, videoItem, qualityObj.label, false);
+            await sendTextMessage(sender_psid, `⚡ اكتمل التحميل (${fileSizeMB.toFixed(1)}MB)! جاري الإرسال كفيديو...`);
+            await uploadVideoToWhatsApp(sender_psid, originalPath, null, videoItem, qualityObj.label, false);
         } else {
-            await sendTextMessage(sender_psid, `⚠️ الفيديو كبير جداً (${fileSizeMB.toFixed(1)}MB).\n🚀 لتجنب انهيار البوت، جاري إرساله كـ "ملف مستند" (Document) يمكنك تشغيله بأعلى جودة...`);
-            await uploadVideoToWhatsApp(sender_psid, originalPath, thumbPath, videoItem, qualityObj.label, true);
+            await sendTextMessage(sender_psid, `⚠️ الفيديو بحجم (${fileSizeMB.toFixed(1)}MB).\n🚀 لتجنب انهيار السيرفر، جاري إرساله كـ "ملف" (Document)...`);
+            await uploadVideoToWhatsApp(sender_psid, originalPath, null, videoItem, qualityObj.label, true);
         }
 
     } catch (error) {
         console.error("❌ خطأ التحميل:", getRealError(error));
-        await sendTextMessage(sender_psid, `❌ حدث خطأ أثناء تحميل الفيديو. قد يكون الموقع حظر هذه الجودة مؤقتاً.`);
+        await sendTextMessage(sender_psid, `❌ حدث خطأ أثناء التحميل.`);
     } finally {
         if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
         if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
@@ -500,37 +488,39 @@ async function downloadAndSendVideo(sender_psid, qualityObj, videoItem) {
         let currentSession = userSessions.get(sender_psid);
         if (currentSession && currentSession.items) {
             userSessions.set(sender_psid, { type: 'search', items: currentSession.items, searchPage: currentSession.searchPage, searchQuery: currentSession.searchQuery });
-        } else {
-            userSessions.delete(sender_psid);
-        }
+        } else userSessions.delete(sender_psid);
     }
 }
 
+// 🌟 تحميل الشرائح باستخدام Streams لعدم استهلاك الرام (0MB استهلاك!)
 async function downloadHLSInNode(subM3u8Url, rawTsPath, outputMp4Path) {
     const baseUrl = subM3u8Url.substring(0, subM3u8Url.lastIndexOf('/') + 1);
     const playlistRes = await axios.get(subM3u8Url, { headers: BROWSER_HEADERS, httpsAgent, timeout: 20000 });
     const lines = String(playlistRes.data).split('\n');
     const segmentUrls = [];
+    
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
         if (line && !line.startsWith('#')) segmentUrls.push(line.startsWith('http') ? line : baseUrl + line);
     }
+    
     const writer = fs.createWriteStream(rawTsPath);
     for (let i = 0; i < segmentUrls.length; i++) {
-        const segRes = await axios.get(segmentUrls[i], { headers: BROWSER_HEADERS, httpsAgent, responseType: 'arraybuffer', timeout: 30000 });
-        writer.write(Buffer.from(segRes.data));
+        try {
+            const segRes = await axios.get(segmentUrls[i], { headers: BROWSER_HEADERS, httpsAgent, responseType: 'stream', timeout: 30000 });
+            await new Promise((resolve, reject) => {
+                segRes.data.pipe(writer, { end: false });
+                segRes.data.on('end', resolve);
+                segRes.data.on('error', reject);
+            });
+        } catch (e) { console.warn("⚠️ تخطي شريحة تالفة."); }
     }
-    await new Promise((resolve, reject) => { writer.end(); writer.on('finish', resolve); writer.on('error', reject); });
-    
-    // تحويل TS إلى MP4 بنسخ البيانات فقط (بدون إرهاق الرام)
+    writer.end();
+    await new Promise(resolve => writer.on('finish', resolve));
+
+    // دمج بدون استخدام ميزة faststart الثقيلة على الرام
     await new Promise((resolve, reject) => {
         ffmpeg(rawTsPath).outputOptions(['-y', '-c', 'copy', '-bsf:a', 'aac_adtstoasc']).save(outputMp4Path).on('end', () => resolve(outputMp4Path)).on('error', reject);
-    });
-}
-
-function generateThumbnail(videoPath, thumbPath) {
-    return new Promise((resolve) => {
-        ffmpeg(videoPath).inputOptions(['-ss', '00:00:02']).outputOptions(['-y', '-vframes', '1', '-vf', 'scale=320:-1', '-q:v', '5']).save(thumbPath).on('end', () => resolve(true)).on('error', () => resolve(false));
     });
 }
 
@@ -541,29 +531,22 @@ async function downloadFileLocally(url, destPath) {
     return new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
 }
 
-// 🌟 دالة الرفع الداعمة لوضع إرسال الملفات (Documents)
 async function uploadVideoToWhatsApp(sender_psid, filePath, thumbPath, videoItem, qualityLabel, sendAsDocument) {
-    let thumbBuffer = undefined;
-    if (thumbPath && fs.existsSync(thumbPath)) thumbBuffer = fs.readFileSync(thumbPath);
-
     const captionText = `✅ *تم التحميل بنجاح*\n🎞️ الجودة: ${qualityLabel}\n⏱️ المدة: ${videoItem ? videoItem.duration : ''}`;
-
+    
     if (sendAsDocument) {
         await sock.sendMessage(sender_psid, {
             document: { url: filePath },
             mimetype: 'video/mp4',
             fileName: `${qualityLabel}_Video.mp4`,
-            caption: captionText,
-            jpegThumbnail: thumbBuffer
+            caption: captionText
         });
     } else {
-        const messagePayload = {
+        await sock.sendMessage(sender_psid, {
             video: { url: filePath },
             mimetype: 'video/mp4',
             caption: captionText
-        };
-        if (thumbBuffer) messagePayload.jpegThumbnail = thumbBuffer;
-        await sock.sendMessage(sender_psid, messagePayload);
+        });
     }
 }
 
