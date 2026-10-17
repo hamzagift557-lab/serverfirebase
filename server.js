@@ -7,8 +7,6 @@ const https = require('https');
 const { default: makeWASocket, DisconnectReason, initAuthCreds, BufferJSON, proto } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcode = require('qrcode');
-
-// 🌟 السر وراء مواقع التحميل: المحرك الذكي
 const youtubedl = require('youtube-dl-exec');
 
 // استدعاء مكتبات الضغط والمعالجة المحلية
@@ -30,42 +28,40 @@ const BROWSER_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
-    'Referer': 'https://www.xvideos.com/'
+    'Referer': 'https://www.xvideos.com/',
+    'Connection': 'keep-alive'
 };
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 function getRealError(err) {
-    if (!err) return "Unknown Error (Empty)";
-    let details = [];
-    if (err.response) {
-        details.push(`HTTP Status: ${err.response.status}`);
-        if (err.response.data) {
-            try {
-                let dataStr = typeof err.response.data === 'object' ? JSON.stringify(err.response.data, null, 2) : String(err.response.data).substring(0, 800);
-                details.push(`Response Data: ${dataStr}`);
-            } catch (e) {}
-        }
-    }
-    if (err.stack) details.push(`Stack: ${err.stack}`);
-    else if (err.message) details.push(`Message: ${err.message}`);
-    return details.length > 0 ? details.join('\n') : String(err);
+    if (!err) return "Unknown Error";
+    if (err.response) return `HTTP ${err.response.status} - ${err.response.statusText}`;
+    if (err.message) return String(err.message);
+    return String(err);
 }
 
 function delay(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
+// 🌟 الفاحص الذكي الجديد (يتأكد من محتوى الصفحة لتخطي الكابتشا بنجاح)
 async function fetchHtmlSmart(targetUrl, SCRAPER_API_KEY) {
     try {
-        const directRes = await axios.get(targetUrl, { headers: BROWSER_HEADERS, httpsAgent, timeout: 20000 });
-        if (directRes.data && String(directRes.data).length > 500) return directRes.data;
+        const directRes = await axios.get(targetUrl, { headers: BROWSER_HEADERS, httpsAgent, timeout: 15000 });
+        // التأكد من وجود كود الفيديو الحقيقي بدلاً من الاعتماد على حجم الصفحة
+        if (directRes.data && (directRes.data.includes('setVideoHLS') || directRes.data.includes('setVideoUrl'))) {
+            return directRes.data;
+        }
+        console.warn("⚠️ الصفحة المباشرة لا تحتوي على فيديو (يوجد حظر IP). جاري تفعيل كاسر الحماية...");
     } catch (directErr) {
-        console.warn("⚠️ الجلب المباشر فشل، جاري التحويل إلى ScraperAPI...");
+        console.warn("⚠️ فشل الاتصال المباشر. جاري تفعيل كاسر الحماية...");
     }
+    
+    // تفعيل ScraperAPI لتخطي الحماية
     const scraperUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}`;
     const proxyRes = await axios.get(scraperUrl, { headers: BROWSER_HEADERS, httpsAgent, timeout: 45000 });
     return proxyRes.data;
 }
 
-app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Awake and Running (Smart Engine)!'));
+app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Awake and Running (Ultimate Edition)!'));
 app.get('/qr', (req, res) => {
     if (isConnected) res.send('<h2 style="color: green; text-align: center; margin-top: 50px;">✅ البوت متصل بواتساب بنجاح!</h2>');
     else if (currentQR) {
@@ -93,7 +89,7 @@ async function useFastFirebaseAuthState() {
                 }
             }
         }
-    } catch (err) { console.error("⚠️ خطأ أصلي أثناء قراءة الجلسة:", getRealError(err)); }
+    } catch (err) { console.error("⚠️ خطأ قراءة الجلسة:", getRealError(err)); }
 
     if (!creds) {
         creds = initAuthCreds();
@@ -276,18 +272,18 @@ async function connectToWhatsApp() {
                     }
                 }
             } catch (error) {
-                console.error("❌ خطأ أصلي أثناء معالجة الرسالة:\n", getRealError(error));
+                console.error("❌ خطأ أثناء معالجة الرسالة:", getRealError(error));
             } finally { userLocks.delete(sender_psid); }
         });
-    } catch (err) { console.error("❌ خطأ أصلي أثناء تهيئة الاتصال:\n", getRealError(err)); }
+    } catch (err) { console.error("❌ خطأ أثناء تهيئة الاتصال:", getRealError(err)); }
 }
 
 connectToWhatsApp();
 
-process.on('uncaughtException', (err) => { console.error("🔥 خطأ غير معالج:\n", getRealError(err)); });
+process.on('uncaughtException', (err) => { console.error("🔥 خطأ غير معالج:", getRealError(err)); });
 process.on('unhandledRejection', async (reason) => {
     let errStr = String(reason);
-    console.error("🔥 وعد مرفوض:\n", getRealError(reason));
+    console.error("🔥 وعد مرفوض:", getRealError(reason));
     if (errStr.includes('_deserialize_chains') || errStr.includes('Cannot convert undefined or null to object')) {
         console.log('🔄 تم اكتشاف جلسة تالفة بسبب Firebase. جاري الفرمتة للبدء من جديد...');
         try { await axios.delete(`${FIREBASE_DB_URL}.json`); } catch(e){}
@@ -362,20 +358,20 @@ async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
             await sendTextMessage(sender_psid, `✅ تم عرض ${elements.length} فيديوهات!\n\n📥 *للتحميل:* أرسل رقم الفيديو\n🔗 *للتفاصيل:* أرسل الرقم مع كلمة link (مثال: 2 link)\n⏭️ *للمزيد:* أرسل nex`);
         } else await sendTextMessage(sender_psid, `❌ لم يتم العثور على فيديوهات.`);
     } catch (error) {
-        console.error("❌ خطأ أصلي في البحث:\n", getRealError(error));
-        await sendTextMessage(sender_psid, `❌ الخطأ الأصلي أثناء البحث:\n${getRealError(error)}`);
+        console.error("❌ خطأ في البحث:", getRealError(error));
+        await sendTextMessage(sender_psid, `❌ حدث خطأ تقني أثناء البحث.`);
     }
 }
 
-// 🌟 المحرك السري (youtube-dl-exec) لاستخراج جميع الجودات تماماً كمواقع التحميل
+// 🌟 المحرك السري والمدمج لاستخراج جميع الجودات
 async function fetchQualitiesAndSendOptions(sender_psid, videoItem) {
     try {
         await sendTextMessage(sender_psid, "⏳ جاري استخراج جميع الجودات عبر المحرك الذكي...");
         let sessionQualities = [];
         let extractionErrors = [];
 
+        // 1. المحاولة الأولى: عبر المحرك المدمج (yt-dlp) بصمت
         try {
-            // استخدام مكتبة youtube-dl-exec المدمجة لديك
             const info = await youtubedl(videoItem.link, {
                 dumpSingleJson: true,
                 noWarnings: true,
@@ -388,33 +384,23 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoItem) {
                 info.formats.forEach(f => {
                     let h = f.height;
                     let url = f.url;
-                    // تصفية الجودات: جلب الفيديو فقط واستبعاد الدقة الضعيفة جداً (<144p)
                     if (h && url && h >= 144 && f.vcodec !== 'none') {
                         if (!seenHeights[h]) {
                             seenHeights[h] = true;
                             let sizeMB = "?";
                             if (f.filesize) sizeMB = (f.filesize / 1048576).toFixed(1);
                             else if (f.filesize_approx) sizeMB = (f.filesize_approx / 1048576).toFixed(1);
-                            
-                            sessionQualities.push({
-                                label: `${h}p`,
-                                url: url,
-                                sizeMB: sizeMB,
-                                isHLS: url.includes('.m3u8') || f.protocol === 'm3u8_native',
-                                height: h
-                            });
+                            sessionQualities.push({ label: `${h}p`, url: url, sizeMB: sizeMB, isHLS: url.includes('.m3u8') || f.protocol === 'm3u8_native', height: h });
                         }
                     }
                 });
             }
         } catch (ytErr) {
-            extractionErrors.push(`YTDL Error: ${getRealError(ytErr)}`);
-            console.error("⚠️ فشل المحرك الذكي:", getRealError(ytErr));
+            console.log("⚠️ فشل محرك yt-dlp، جاري التحويل للمحرك اليدوي...");
         }
 
-        // الخطة البديلة في حال حظر المحرك
+        // 2. الخطة البديلة المنيعة: استخراج HTML متجاوزاً الكابتشا
         if (sessionQualities.length === 0) {
-            console.log("⚠️ جاري تفعيل محرك السكرابنج اليدوي كخطة بديلة...");
             const html = await fetchHtmlSmart(videoItem.link, SCRAPER_API_KEY);
             let durationSec = 0;
             let durMatch = html.match(/setVideoDuration\((\d+(?:\.\d+)?)\)/);
@@ -444,7 +430,7 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoItem) {
                             pendingInfo = null;
                         }
                     }
-                } catch (hlsErr) { extractionErrors.push(`HLS Fallback Error: ${getRealError(hlsErr)}`); }
+                } catch (hlsErr) { console.error("⚠️ فشل جلب ملف HLS:", getRealError(hlsErr)); }
             }
 
             if (sessionQualities.length === 0) {
@@ -455,7 +441,7 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoItem) {
             }
         }
 
-        // ترتيب الجودات تصاعدياً
+        // ترتيب تصاعدي وإرسال النتيجة
         sessionQualities.sort((a, b) => a.height - b.height);
 
         if (sessionQualities.length > 0) {
@@ -467,12 +453,15 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoItem) {
                 searchQuery: currentSession ? currentSession.searchQuery : ""
             });
             
-            let msg = `✅ *الجودات المتاحة (${sessionQualities.length}):*\nأرسل الرقم للتحميل:\n\n`;
+            let msg = `✅ *تم استخراج الجودات (${sessionQualities.length}):*\nأرسل الرقم للتحميل:\n\n`;
             sessionQualities.forEach((q, index) => { msg += `*[ ${index + 1} ]* 📥 جودة ${q.label} — (الحجم التقريبي: ${q.sizeMB}MB)\n`; });
             await sendTextMessage(sender_psid, msg);
-        } else await sendTextMessage(sender_psid, `❌ فشل استخراج الجودات.\n${extractionErrors.join('\n')}`);
+        } else {
+            await sendTextMessage(sender_psid, `❌ فشل استخراج الجودات. يبدو أن الموقع يفرض حماية قوية جداً حالياً.`);
+        }
     } catch (error) {
-        await sendTextMessage(sender_psid, `❌ الخطأ الأصلي:\n${getRealError(error)}`);
+        console.error("❌ خطأ استخراج الجودات:", getRealError(error));
+        await sendTextMessage(sender_psid, `❌ حدث خطأ فني أثناء جلب الروابط.`);
     }
 }
 
@@ -484,7 +473,7 @@ async function downloadAndCompressVideo(sender_psid, qualityObj, videoItem) {
     let thumbPath = path.join('/tmp', `thumb_${timestamp}.jpg`);
 
     try {
-        await sendTextMessage(sender_psid, `📥 جاري التحميل (${qualityObj.label})... يرجى الانتظار.`);
+        await sendTextMessage(sender_psid, `📥 جاري التحميل (${qualityObj.label})... יرجى الانتظار.`);
         if (qualityObj.isHLS) await downloadHLSInNode(qualityObj.url, rawTsPath, originalPath);
         else await downloadFileLocally(qualityObj.url, originalPath);
 
@@ -500,7 +489,8 @@ async function downloadAndCompressVideo(sender_psid, qualityObj, videoItem) {
         await generateThumbnail(readyPath, thumbPath);
         await uploadVideoToWhatsApp(sender_psid, readyPath, thumbPath, videoItem, qualityObj.label);
     } catch (error) {
-        await sendTextMessage(sender_psid, `❌ خطأ المعالجة:\n${getRealError(error)}`);
+        console.error("❌ خطأ المعالجة:", getRealError(error));
+        await sendTextMessage(sender_psid, `❌ خطأ أثناء معالجة أو إرسال الفيديو.`);
     } finally {
         if (fs.existsSync(rawTsPath)) fs.unlinkSync(rawTsPath);
         if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
