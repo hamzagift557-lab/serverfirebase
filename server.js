@@ -8,6 +8,9 @@ const { default: makeWASocket, DisconnectReason, initAuthCreds, BufferJSON, prot
 const pino = require('pino');
 const qrcode = require('qrcode');
 
+// 🌟 السر وراء مواقع التحميل: المحرك الذكي
+const youtubedl = require('youtube-dl-exec');
+
 // استدعاء مكتبات الضغط والمعالجة المحلية
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegStatic = require('ffmpeg-static');
@@ -29,7 +32,6 @@ const BROWSER_HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
     'Referer': 'https://www.xvideos.com/'
 };
-
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 function getRealError(err) {
@@ -39,22 +41,17 @@ function getRealError(err) {
         details.push(`HTTP Status: ${err.response.status}`);
         if (err.response.data) {
             try {
-                let dataStr = typeof err.response.data === 'object'
-                    ? JSON.stringify(err.response.data, null, 2)
-                    : String(err.response.data).substring(0, 800);
+                let dataStr = typeof err.response.data === 'object' ? JSON.stringify(err.response.data, null, 2) : String(err.response.data).substring(0, 800);
                 details.push(`Response Data: ${dataStr}`);
             } catch (e) {}
         }
     }
     if (err.stack) details.push(`Stack: ${err.stack}`);
     else if (err.message) details.push(`Message: ${err.message}`);
-    
     return details.length > 0 ? details.join('\n') : String(err);
 }
 
-function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
+function delay(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 async function fetchHtmlSmart(targetUrl, SCRAPER_API_KEY) {
     try {
@@ -63,66 +60,40 @@ async function fetchHtmlSmart(targetUrl, SCRAPER_API_KEY) {
     } catch (directErr) {
         console.warn("⚠️ الجلب المباشر فشل، جاري التحويل إلى ScraperAPI...");
     }
-
     const scraperUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}`;
     const proxyRes = await axios.get(scraperUrl, { headers: BROWSER_HEADERS, httpsAgent, timeout: 45000 });
     return proxyRes.data;
 }
 
-app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Awake and Running (Firebase Fix)!'));
-
+app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Awake and Running (Smart Engine)!'));
 app.get('/qr', (req, res) => {
-    if (isConnected) {
-        res.send('<h2 style="color: green; text-align: center; margin-top: 50px;">✅ البوت متصل بواتساب بنجاح!</h2>');
-    } else if (currentQR) {
-        res.send(`
-            <html>
-                <body style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100vh; background-color:#f0f2f5; font-family: Arial, sans-serif;">
-                    <div style="text-align:center; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
-                        <h2 style="color: #075e54;">📱 ربط بوت واتساب</h2>
-                        <img src="${currentQR}" style="width:300px; height:300px; border: 2px solid #ddd; border-radius: 10px; padding: 10px;"/>
-                    </div>
-                </body>
-            </html>
-        `);
-    } else {
-        res.send('<h2 style="text-align: center; margin-top: 50px;">⏳ جاري توليد الكود أو جلب الجلسة...</h2>');
-    }
+    if (isConnected) res.send('<h2 style="color: green; text-align: center; margin-top: 50px;">✅ البوت متصل بواتساب بنجاح!</h2>');
+    else if (currentQR) {
+        res.send(`<html><body style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100vh; background-color:#f0f2f5; font-family: Arial, sans-serif;"><div style="text-align:center; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);"><h2 style="color: #075e54;">📱 ربط بوت واتساب</h2><img src="${currentQR}" style="width:300px; height:300px; border: 2px solid #ddd; border-radius: 10px; padding: 10px;"/></div></body></html>`);
+    } else res.send('<h2 style="text-align: center; margin-top: 50px;">⏳ جاري توليد الكود أو جلب الجلسة...</h2>');
 });
 
 const SCRAPER_API_KEY = "e52e3ecb8172c130934a150b2e7c5f22";
 const FIREBASE_DB_URL = "https://hamza-kr-default-rtdb.firebaseio.com/whatsapp_auth";
 
-// 🌟 المحول الذكي بعد التحديث لمنع Firebase من حذف الكائنات الفارغة
 async function useFastFirebaseAuthState() {
     let memoryKeys = {};
     let creds = null;
-
     try {
         console.log('📥 جاري تحميل الجلسة من Firebase...');
         const res = await axios.get(`${FIREBASE_DB_URL}.json`, { timeout: 15000 });
         if (res.data) {
             if (res.data.creds) {
-                // إذا تم تخزينه كنص (التحديث الجديد) أو كائن (القديم)
-                if (typeof res.data.creds === 'string') {
-                    creds = JSON.parse(res.data.creds, BufferJSON.reviver);
-                } else {
-                    creds = JSON.parse(JSON.stringify(res.data.creds), BufferJSON.reviver);
-                }
+                creds = typeof res.data.creds === 'string' ? JSON.parse(res.data.creds, BufferJSON.reviver) : JSON.parse(JSON.stringify(res.data.creds), BufferJSON.reviver);
             }
             if (res.data.keys) {
                 for (const k in res.data.keys) {
-                    if (typeof res.data.keys[k] === 'string') {
-                        memoryKeys[k] = JSON.parse(res.data.keys[k], BufferJSON.reviver);
-                    } else {
-                        memoryKeys[k] = JSON.parse(JSON.stringify(res.data.keys[k]), BufferJSON.reviver);
-                    }
+                    let val = res.data.keys[k];
+                    memoryKeys[k] = typeof val === 'string' ? JSON.parse(val, BufferJSON.reviver) : JSON.parse(JSON.stringify(val), BufferJSON.reviver);
                 }
             }
         }
-    } catch (err) {
-        console.error("⚠️ خطأ أصلي أثناء قراءة الجلسة:", getRealError(err));
-    }
+    } catch (err) { console.error("⚠️ خطأ أصلي أثناء قراءة الجلسة:", getRealError(err)); }
 
     if (!creds) {
         creds = initAuthCreds();
@@ -132,16 +103,13 @@ async function useFastFirebaseAuthState() {
 
     let pendingUpdates = {};
     let syncTimer = null;
-
     const scheduleBackgroundSync = () => {
         if (syncTimer) return;
         syncTimer = setTimeout(async () => {
             const payload = pendingUpdates;
             pendingUpdates = {};
             syncTimer = null;
-            try {
-                await axios.patch(`${FIREBASE_DB_URL}/keys.json`, payload);
-            } catch (err) {}
+            try { await axios.patch(`${FIREBASE_DB_URL}/keys.json`, payload); } catch (err) {}
         }, 1500);
     };
 
@@ -156,9 +124,7 @@ async function useFastFirebaseAuthState() {
                         const keyName = `${type}-${safeId}`;
                         let value = memoryKeys[keyName];
                         if (value) {
-                            if (type === 'app-state-sync-key') {
-                                value = proto.Message.AppStateSyncKeyData.fromObject(value);
-                            }
+                            if (type === 'app-state-sync-key') value = proto.Message.AppStateSyncKeyData.fromObject(value);
                             data[id] = value;
                         }
                     }
@@ -172,7 +138,6 @@ async function useFastFirebaseAuthState() {
                             const keyName = `${category}-${safeId}`;
                             if (value) {
                                 memoryKeys[keyName] = value;
-                                // 🌟 حفظ البيانات على شكل نص (String) لخداع فايربيس
                                 pendingUpdates[keyName] = JSON.stringify(value, BufferJSON.replacer);
                             } else {
                                 delete memoryKeys[keyName];
@@ -215,25 +180,19 @@ async function connectToWhatsApp() {
 
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect, qr } = update;
-
             if (qr) {
                 let appName = process.env.FLY_APP_NAME ? process.env.FLY_APP_NAME : 'serverfirebase';
                 console.log(`📱 افتح الرابط لمسح الكود: https://${appName}.fly.dev/qr`);
                 currentQR = await qrcode.toDataURL(qr);
             }
-
             if (connection === 'close') {
-                isConnected = false;
-                currentQR = '';
-                let statusCode = 0;
-                if (lastDisconnect && lastDisconnect.error && lastDisconnect.error.output) {
-                    statusCode = lastDisconnect.error.output.statusCode;
-                }
+                isConnected = false; currentQR = '';
+                let statusCode = lastDisconnect?.error?.output?.statusCode || 0;
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
                 if (shouldReconnect) {
                     let errStr = getRealError(lastDisconnect ? lastDisconnect.error : '');
-                    if (errStr.includes('Bad MAC') || errStr.includes('decrypt') || errStr.includes('_deserialize_chains')) {
+                    if (errStr.includes('Bad MAC') || errStr.includes('decrypt') || errStr.includes('_deserialize_chains') || errStr.includes('undefined')) {
                         console.log('🔄 تلف في الجلسة. جاري مسحها لطلب كود جديد...');
                         await clearSession();
                     }
@@ -244,8 +203,7 @@ async function connectToWhatsApp() {
                     connectToWhatsApp();
                 }
             } else if (connection === 'open') {
-                isConnected = true;
-                currentQR = '';
+                isConnected = true; currentQR = '';
                 console.log('✅ تم ربط واتساب بنجاح!');
                 await sock.sendPresenceUpdate('available');
             }
@@ -254,41 +212,25 @@ async function connectToWhatsApp() {
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             const msg = messages[0];
-            if (!msg.message) return;
-            if (msg.key.fromMe) return;
-
+            if (!msg.message || msg.key.fromMe) return;
             if (msg.messageTimestamp && msg.messageTimestamp < Math.floor(Date.now() / 1000) - 60) return;
 
             const sender_psid = msg.key.remoteJid;
-            
-            let userText = "";
-            if (msg.message.conversation) {
-                userText = msg.message.conversation;
-            } else if (msg.message.extendedTextMessage && msg.message.extendedTextMessage.text) {
-                userText = msg.message.extendedTextMessage.text;
-            }
-            userText = userText.trim();
-
+            let userText = (msg.message.conversation || msg.message.extendedTextMessage?.text || "").trim();
             if (!userText) return;
-            console.log(`📩 رسالة فورية من ${sender_psid}: "${userText}"`);
+            console.log(`📩 رسالة من ${sender_psid}: "${userText}"`);
 
             try { await sock.readMessages([msg.key]); } catch (e) {}
-
             let session = userSessions.get(sender_psid);
 
             let linkMatch1 = userText.match(/^(\d+)\s+link$/i);
             let linkMatch2 = userText.match(/^link\s+(\d+)$/i);
-            let linkNum = null;
-            if (linkMatch1) linkNum = parseInt(linkMatch1[1]);
-            if (linkMatch2) linkNum = parseInt(linkMatch2[1]);
+            let linkNum = linkMatch1 ? parseInt(linkMatch1[1]) : (linkMatch2 ? parseInt(linkMatch2[1]) : null);
 
             if (linkNum !== null) {
                 if (session && session.items && session.items[linkNum - 1]) {
-                    let item = session.items[linkNum - 1];
-                    await sendLinkDetails(sender_psid, item, linkNum);
-                } else {
-                    await sendTextMessage(sender_psid, "❌ الرقم غير متوفر في البحث الحالي.");
-                }
+                    await sendLinkDetails(sender_psid, session.items[linkNum - 1], linkNum);
+                } else await sendTextMessage(sender_psid, "❌ الرقم غير متوفر في البحث الحالي.");
                 return;
             }
 
@@ -309,20 +251,14 @@ async function connectToWhatsApp() {
                     } else if (session.type === 'quality' && session.qualities && session.qualities[num - 1]) {
                         userLocks.set(sender_psid, `معالجة جودة ${num}`);
                         await downloadAndCompressVideo(sender_psid, session.qualities[num - 1], session.selectedVideo);
-                    } else {
-                        await sendTextMessage(sender_psid, "❌ الرقم غير موجود ضمن الخيارات المعروضة.");
-                    }
-                }
-                else if (lowerText === 'nex') {
+                    } else await sendTextMessage(sender_psid, "❌ الرقم غير موجود ضمن الخيارات المعروضة.");
+                } else if (lowerText === 'nex') {
                     if (session && session.searchPage !== undefined) {
                         let nextP = session.searchPage + 1;
                         userLocks.set(sender_psid, `جلب صفحة ${nextP}`);
                         await fetchAndSendVideos(sender_psid, nextP, session.searchQuery);
-                    } else {
-                        await sendTextMessage(sender_psid, "❌ لا يوجد بحث سابق لعرض المزيد.");
-                    }
-                }
-                else {
+                    } else await sendTextMessage(sender_psid, "❌ لا يوجد بحث سابق لعرض المزيد.");
+                } else {
                     let isWelcome = userText === 'مرحبا';
                     let isHi = lowerText === 'hi';
                     if (isWelcome ? true : isHi) {
@@ -335,45 +271,34 @@ async function connectToWhatsApp() {
                         if (lowerText === 'a') finalQuery = 'anal';
                         if (lowerText === 's') finalQuery = 'sex';
                         if (lowerText === 'p') finalQuery = 'porn';
-
                         userLocks.set(sender_psid, `البحث عن "${finalQuery}"`);
                         await fetchAndSendVideos(sender_psid, 1, finalQuery);
                     }
                 }
             } catch (error) {
                 console.error("❌ خطأ أصلي أثناء معالجة الرسالة:\n", getRealError(error));
-            } finally {
-                userLocks.delete(sender_psid);
-            }
+            } finally { userLocks.delete(sender_psid); }
         });
-
-    } catch (err) {
-        console.error("❌ خطأ أصلي أثناء تهيئة الاتصال:\n", getRealError(err));
-    }
+    } catch (err) { console.error("❌ خطأ أصلي أثناء تهيئة الاتصال:\n", getRealError(err)); }
 }
 
 connectToWhatsApp();
 
-process.on('uncaughtException', (err) => {
-    console.error("🔥 خطأ غير معالج (uncaughtException):\n", getRealError(err));
-});
-
-// 🌟 هذا هو الحدث الذي سيمسح الجلسة التالفة بمجرد حدوث انهيار في Firebase
+process.on('uncaughtException', (err) => { console.error("🔥 خطأ غير معالج:\n", getRealError(err)); });
 process.on('unhandledRejection', async (reason) => {
-    console.error("🔥 وعد مرفوض (unhandledRejection):\n", getRealError(reason));
     let errStr = String(reason);
+    console.error("🔥 وعد مرفوض:\n", getRealError(reason));
     if (errStr.includes('_deserialize_chains') || errStr.includes('Cannot convert undefined or null to object')) {
-        console.log('🔄 تم اكتشاف جلسة تالفة بسبب سياسة Firebase. جاري مسحها بالكامل للبدء من جديد...');
+        console.log('🔄 تم اكتشاف جلسة تالفة بسبب Firebase. جاري الفرمتة للبدء من جديد...');
         try { await axios.delete(`${FIREBASE_DB_URL}.json`); } catch(e){}
-        process.exit(1); // إغلاق السيرفر ليقلع من جديد بكود QR نظيف
+        process.exit(1); 
     }
 });
 
 async function sendLinkDetails(sender_psid, item, indexNum) {
     try {
         let channelName = item.channel;
-        let isUnknown = channelName === "غير متوفر";
-        if (!channelName ? true : isUnknown) {
+        if (!channelName ? true : channelName === "غير متوفر") {
             try {
                 const html = await fetchHtmlSmart(item.link, SCRAPER_API_KEY);
                 let uploaderMatch = html.match(/setUploaderName\(['"]([^'"]+)['"]\)/);
@@ -393,11 +318,9 @@ async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
             let p = page - 1;
             targetUrl = `https://www.xvideos.com/?k=${encodeURIComponent(searchQuery)}`;
             if (p > 0) targetUrl = targetUrl + '&p=' + p;
-        } else {
-            if (page > 1) {
-                let p = page - 1;
-                targetUrl = `https://www.xvideos.com/new/${p}/`;
-            }
+        } else if (page > 1) {
+            let p = page - 1;
+            targetUrl = `https://www.xvideos.com/new/${p}/`;
         }
 
         let searchLabel = searchQuery !== "" ? `(${searchQuery})` : `الرئيسية`;
@@ -409,21 +332,17 @@ async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
         
         $('.thumb-block').toArray().forEach(element => {
             if (elements.length >= 10) return;
-
             let titleEl = $(element).find('.title a');
             let link = titleEl.attr('href');
             let titleAttr = titleEl.attr('title');
             let titleText = titleEl.text().trim();
             let title = titleAttr ? titleAttr : (titleText ? titleText : "بدون عنوان");
-
             let durationText = $(element).find('.duration').text().trim();
             let duration = durationText ? durationText : "غير محدد";
-
             let ch1 = $(element).find('.metadata .name').text().trim();
             let ch2 = $(element).find('.uploader .name').text().trim();
             let ch3 = $(element).find('.name').first().text().trim();
             let channel = ch1 ? ch1 : (ch2 ? ch2 : (ch3 ? ch3 : "غير متوفر"));
-            
             let imgUrl = $(element).find('.thumb img').attr('data-src');
             if (!imgUrl) imgUrl = $(element).find('.thumb img').attr('src');
             
@@ -435,116 +354,109 @@ async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
 
         if (elements.length > 0) {
             userSessions.set(sender_psid, { type: 'search', items: elements, searchPage: page, searchQuery: searchQuery });
-
             for (let i = 0; i < elements.length; i++) {
                 try { await sock.sendPresenceUpdate('composing', sender_psid); } catch (e) {}
-                await sock.sendMessage(sender_psid, {
-                    image: { url: elements[i].image },
-                    caption: `🎬 خيار رقم [ ${i + 1} ]\n⏱️ المدة: ${elements[i].duration}`
-                });
+                await sock.sendMessage(sender_psid, { image: { url: elements[i].image }, caption: `🎬 خيار رقم [ ${i + 1} ]\n⏱️ المدة: ${elements[i].duration}` });
                 await delay(800);
             }
-
             await sendTextMessage(sender_psid, `✅ تم عرض ${elements.length} فيديوهات!\n\n📥 *للتحميل:* أرسل رقم الفيديو\n🔗 *للتفاصيل:* أرسل الرقم مع كلمة link (مثال: 2 link)\n⏭️ *للمزيد:* أرسل nex`);
-        } else {
-            await sendTextMessage(sender_psid, `❌ لم يتم العثور على فيديوهات.`);
-        }
+        } else await sendTextMessage(sender_psid, `❌ لم يتم العثور على فيديوهات.`);
     } catch (error) {
         console.error("❌ خطأ أصلي في البحث:\n", getRealError(error));
         await sendTextMessage(sender_psid, `❌ الخطأ الأصلي أثناء البحث:\n${getRealError(error)}`);
     }
 }
 
+// 🌟 المحرك السري (youtube-dl-exec) لاستخراج جميع الجودات تماماً كمواقع التحميل
 async function fetchQualitiesAndSendOptions(sender_psid, videoItem) {
     try {
-        await sendTextMessage(sender_psid, "⏳ جاري استخراج الجودات الحقيقية المتوفرة...");
-
-        const html = await fetchHtmlSmart(videoItem.link, SCRAPER_API_KEY);
-
-        let durationSec = 0;
-        let durMatch = html.match(/setVideoDuration\((\d+(?:\.\d+)?)\)/);
-        if (durMatch && durMatch[1]) durationSec = parseFloat(durMatch[1]);
-
-        let uploaderMatch = html.match(/setUploaderName\(['"]([^'"]+)['"]\)/);
-        if (uploaderMatch && uploaderMatch[1]) videoItem.channel = uploaderMatch[1];
-
+        await sendTextMessage(sender_psid, "⏳ جاري استخراج جميع الجودات عبر المحرك الذكي...");
         let sessionQualities = [];
         let extractionErrors = [];
 
-        let matchHLS = html.match(/setVideoHLS\(['"]([^'"]+)['"]\)/);
-        if (matchHLS && matchHLS[1]) {
-            const hlsMasterUrl = matchHLS[1];
-            const baseUrl = hlsMasterUrl.substring(0, hlsMasterUrl.lastIndexOf('/') + 1);
+        try {
+            // استخدام مكتبة youtube-dl-exec المدمجة لديك
+            const info = await youtubedl(videoItem.link, {
+                dumpSingleJson: true,
+                noWarnings: true,
+                noCheckCertificates: true,
+                referer: 'https://www.xvideos.com/'
+            });
 
-            try {
-                const m3u8Res = await axios.get(hlsMasterUrl, { headers: BROWSER_HEADERS, httpsAgent, timeout: 20000 });
-                const lines = String(m3u8Res.data).split('\n');
-                let pendingInfo = null;
-
-                for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i].trim();
-                    if (line.startsWith('#EXT-X-STREAM-INF:')) {
-                        let nameMatch = line.match(/NAME="([^"]+)"/);
-                        let resMatch = line.match(/RESOLUTION=\d+x(\d+)/);
-                        let bwMatch = line.match(/BANDWIDTH=(\d+)/);
-
-                        let height = resMatch && resMatch[1] ? parseInt(resMatch[1]) : 0;
-                        let label = nameMatch && nameMatch[1] ? nameMatch[1] : (height > 0 ? `${height}p` : 'HLS');
-                        if (!height && label.endsWith('p')) {
-                            let parsedH = parseInt(label);
-                            if (!isNaN(parsedH)) height = parsedH;
+            if (info && info.formats) {
+                let seenHeights = {};
+                info.formats.forEach(f => {
+                    let h = f.height;
+                    let url = f.url;
+                    // تصفية الجودات: جلب الفيديو فقط واستبعاد الدقة الضعيفة جداً (<144p)
+                    if (h && url && h >= 144 && f.vcodec !== 'none') {
+                        if (!seenHeights[h]) {
+                            seenHeights[h] = true;
+                            let sizeMB = "?";
+                            if (f.filesize) sizeMB = (f.filesize / 1048576).toFixed(1);
+                            else if (f.filesize_approx) sizeMB = (f.filesize_approx / 1048576).toFixed(1);
+                            
+                            sessionQualities.push({
+                                label: `${h}p`,
+                                url: url,
+                                sizeMB: sizeMB,
+                                isHLS: url.includes('.m3u8') || f.protocol === 'm3u8_native',
+                                height: h
+                            });
                         }
-                        let bandwidth = bwMatch && bwMatch[1] ? parseInt(bwMatch[1]) : 0;
-
-                        pendingInfo = { label, height, bandwidth };
-                    } else if (line && !line.startsWith('#') && pendingInfo) {
-                        let streamUrl = line.startsWith('http') ? line : baseUrl + line;
-                        let sizeMB = "?";
-                        if (pendingInfo.bandwidth > 0 && durationSec > 0) {
-                            sizeMB = ((pendingInfo.bandwidth * durationSec) / (8 * 1024 * 1024)).toFixed(1);
-                        }
-                        sessionQualities.push({ label: pendingInfo.label, url: streamUrl, sizeMB: sizeMB, isHLS: true, height: pendingInfo.height });
-                        pendingInfo = null;
                     }
-                }
-            } catch (hlsErr) {
-                extractionErrors.push(`HLS Error: ${getRealError(hlsErr)}`);
+                });
             }
-        } else {
-            extractionErrors.push("لم أجد رابط HLS في الصفحة.");
+        } catch (ytErr) {
+            extractionErrors.push(`YTDL Error: ${getRealError(ytErr)}`);
+            console.error("⚠️ فشل المحرك الذكي:", getRealError(ytErr));
         }
 
-        let uniqueQualities = [];
-        let seenLabels = {};
-        for (let i = 0; i < sessionQualities.length; i++) {
-            let q = sessionQualities[i];
-            if (!seenLabels[q.label]) {
-                seenLabels[q.label] = true;
-                uniqueQualities.push(q);
-            }
-        }
-        uniqueQualities.sort((a, b) => a.height - b.height);
-        sessionQualities = uniqueQualities;
-
+        // الخطة البديلة في حال حظر المحرك
         if (sessionQualities.length === 0) {
-            let matchLow = html.match(/setVideoUrlLow\(['"]([^'"]+)['"]\)/);
-            let matchHigh = html.match(/setVideoUrlHigh\(['"]([^'"]+)['"]\)/);
-            let directList = [];
-            if (matchLow && matchLow[1]) directList.push({ label: "MP4 SD", url: matchLow[1] });
-            if (matchHigh && matchHigh[1]) directList.push({ label: "MP4 HD", url: matchHigh[1] });
+            console.log("⚠️ جاري تفعيل محرك السكرابنج اليدوي كخطة بديلة...");
+            const html = await fetchHtmlSmart(videoItem.link, SCRAPER_API_KEY);
+            let durationSec = 0;
+            let durMatch = html.match(/setVideoDuration\((\d+(?:\.\d+)?)\)/);
+            if (durMatch && durMatch[1]) durationSec = parseFloat(durMatch[1]);
 
-            for (let i = 0; i < directList.length; i++) {
-                let q = directList[i];
+            let matchHLS = html.match(/setVideoHLS\(['"]([^'"]+)['"]\)/);
+            if (matchHLS && matchHLS[1]) {
+                const hlsMasterUrl = matchHLS[1];
+                const baseUrl = hlsMasterUrl.substring(0, hlsMasterUrl.lastIndexOf('/') + 1);
                 try {
-                    const headRes = await axios.head(q.url, { headers: BROWSER_HEADERS, httpsAgent, timeout: 10000 });
-                    let sizeBytes = headRes.headers['content-length'];
-                    let sizeMB = sizeBytes ? (sizeBytes / (1024 * 1024)).toFixed(1) : "?";
-                    sessionQualities.push({ label: q.label, url: q.url, sizeMB: sizeMB, isHLS: false });
-                } catch (e) {
-                    sessionQualities.push({ label: q.label, url: q.url, sizeMB: "?", isHLS: false });
-                }
+                    const m3u8Res = await axios.get(hlsMasterUrl, { headers: BROWSER_HEADERS, httpsAgent, timeout: 20000 });
+                    const lines = String(m3u8Res.data).split('\n');
+                    let pendingInfo = null;
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i].trim();
+                        if (line.startsWith('#EXT-X-STREAM-INF:')) {
+                            let resMatch = line.match(/RESOLUTION=\d+x(\d+)/);
+                            let bwMatch = line.match(/BANDWIDTH=(\d+)/);
+                            let height = resMatch && resMatch[1] ? parseInt(resMatch[1]) : 0;
+                            let bandwidth = bwMatch && bwMatch[1] ? parseInt(bwMatch[1]) : 0;
+                            pendingInfo = { label: `${height}p`, height, bandwidth };
+                        } else if (line && !line.startsWith('#') && pendingInfo) {
+                            let streamUrl = line.startsWith('http') ? line : baseUrl + line;
+                            let sizeMB = "?";
+                            if (pendingInfo.bandwidth > 0 && durationSec > 0) sizeMB = ((pendingInfo.bandwidth * durationSec) / (8 * 1024 * 1024)).toFixed(1);
+                            sessionQualities.push({ label: pendingInfo.label, url: streamUrl, sizeMB: sizeMB, isHLS: true, height: pendingInfo.height });
+                            pendingInfo = null;
+                        }
+                    }
+                } catch (hlsErr) { extractionErrors.push(`HLS Fallback Error: ${getRealError(hlsErr)}`); }
+            }
+
+            if (sessionQualities.length === 0) {
+                let matchLow = html.match(/setVideoUrlLow\(['"]([^'"]+)['"]\)/);
+                let matchHigh = html.match(/setVideoUrlHigh\(['"]([^'"]+)['"]\)/);
+                if (matchLow && matchLow[1]) sessionQualities.push({ label: "360p (SD)", url: matchLow[1], sizeMB: "?", isHLS: false, height: 360 });
+                if (matchHigh && matchHigh[1]) sessionQualities.push({ label: "720p (HD)", url: matchHigh[1], sizeMB: "?", isHLS: false, height: 720 });
             }
         }
+
+        // ترتيب الجودات تصاعدياً
+        sessionQualities.sort((a, b) => a.height - b.height);
 
         if (sessionQualities.length > 0) {
             let currentSession = userSessions.get(sender_psid);
@@ -556,13 +468,9 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoItem) {
             });
             
             let msg = `✅ *الجودات المتاحة (${sessionQualities.length}):*\nأرسل الرقم للتحميل:\n\n`;
-            sessionQualities.forEach((q, index) => {
-                msg += `*[ ${index + 1} ]* 📥 ${q.label} — (${q.sizeMB}MB)\n`;
-            });
+            sessionQualities.forEach((q, index) => { msg += `*[ ${index + 1} ]* 📥 جودة ${q.label} — (الحجم التقريبي: ${q.sizeMB}MB)\n`; });
             await sendTextMessage(sender_psid, msg);
-        } else {
-            await sendTextMessage(sender_psid, `❌ فشل استخراج الجودات.\n${extractionErrors.join('\n')}`);
-        }
+        } else await sendTextMessage(sender_psid, `❌ فشل استخراج الجودات.\n${extractionErrors.join('\n')}`);
     } catch (error) {
         await sendTextMessage(sender_psid, `❌ الخطأ الأصلي:\n${getRealError(error)}`);
     }
@@ -577,15 +485,10 @@ async function downloadAndCompressVideo(sender_psid, qualityObj, videoItem) {
 
     try {
         await sendTextMessage(sender_psid, `📥 جاري التحميل (${qualityObj.label})... يرجى الانتظار.`);
-
-        if (qualityObj.isHLS) {
-            await downloadHLSInNode(qualityObj.url, rawTsPath, originalPath);
-        } else {
-            await downloadFileLocally(qualityObj.url, originalPath);
-        }
+        if (qualityObj.isHLS) await downloadHLSInNode(qualityObj.url, rawTsPath, originalPath);
+        else await downloadFileLocally(qualityObj.url, originalPath);
 
         const originalSizeMB = fs.statSync(originalPath).size / (1024 * 1024);
-
         if (originalSizeMB <= 60.0) {
             await sendTextMessage(sender_psid, `⚡ اكتمل التحميل (${originalSizeMB.toFixed(1)}MB)! جاري تهيئة الغلاف...`);
             await remuxFastStart(originalPath, readyPath);
@@ -596,7 +499,6 @@ async function downloadAndCompressVideo(sender_psid, qualityObj, videoItem) {
 
         await generateThumbnail(readyPath, thumbPath);
         await uploadVideoToWhatsApp(sender_psid, readyPath, thumbPath, videoItem, qualityObj.label);
-
     } catch (error) {
         await sendTextMessage(sender_psid, `❌ خطأ المعالجة:\n${getRealError(error)}`);
     } finally {
@@ -604,13 +506,9 @@ async function downloadAndCompressVideo(sender_psid, qualityObj, videoItem) {
         if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
         if (fs.existsSync(readyPath)) fs.unlinkSync(readyPath);
         if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
-
         let currentSession = userSessions.get(sender_psid);
-        if (currentSession && currentSession.items) {
-            userSessions.set(sender_psid, { type: 'search', items: currentSession.items, searchPage: currentSession.searchPage, searchQuery: currentSession.searchQuery });
-        } else {
-            userSessions.delete(sender_psid);
-        }
+        if (currentSession && currentSession.items) userSessions.set(sender_psid, { type: 'search', items: currentSession.items, searchPage: currentSession.searchPage, searchQuery: currentSession.searchQuery });
+        else userSessions.delete(sender_psid);
     }
 }
 
@@ -619,26 +517,16 @@ async function downloadHLSInNode(subM3u8Url, rawTsPath, outputMp4Path) {
     const playlistRes = await axios.get(subM3u8Url, { headers: BROWSER_HEADERS, httpsAgent, timeout: 20000 });
     const lines = String(playlistRes.data).split('\n');
     const segmentUrls = [];
-
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
-        if (line && !line.startsWith('#')) {
-            segmentUrls.push(line.startsWith('http') ? line : baseUrl + line);
-        }
+        if (line && !line.startsWith('#')) segmentUrls.push(line.startsWith('http') ? line : baseUrl + line);
     }
-
     const writer = fs.createWriteStream(rawTsPath);
     for (let i = 0; i < segmentUrls.length; i++) {
         const segRes = await axios.get(segmentUrls[i], { headers: BROWSER_HEADERS, httpsAgent, responseType: 'arraybuffer', timeout: 30000 });
         writer.write(Buffer.from(segRes.data));
     }
-
-    await new Promise((resolve, reject) => {
-        writer.end();
-        writer.on('finish', resolve);
-        writer.on('error', reject);
-    });
-
+    await new Promise((resolve, reject) => { writer.end(); writer.on('finish', resolve); writer.on('error', reject); });
     await new Promise((resolve, reject) => {
         ffmpeg(rawTsPath).outputOptions(['-y', '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', '+faststart']).save(outputMp4Path).on('end', () => resolve(outputMp4Path)).on('error', reject);
     });
@@ -647,8 +535,7 @@ async function downloadHLSInNode(subM3u8Url, rawTsPath, outputMp4Path) {
 function remuxFastStart(inputPath, outputPath) {
     return new Promise((resolve) => {
         ffmpeg(inputPath).outputOptions(['-y', '-c', 'copy', '-movflags', '+faststart']).save(outputPath)
-        .on('end', () => resolve(outputPath))
-        .on('error', () => { fs.copyFileSync(inputPath, outputPath); resolve(outputPath); });
+        .on('end', () => resolve(outputPath)).on('error', () => { fs.copyFileSync(inputPath, outputPath); resolve(outputPath); });
     });
 }
 
@@ -702,7 +589,6 @@ async function uploadVideoToWhatsApp(sender_psid, filePath, thumbPath, videoItem
 
     if (thumbBuffer) messagePayload.jpegThumbnail = thumbBuffer;
     if (durationSeconds) messagePayload.seconds = durationSeconds;
-
     await sock.sendMessage(sender_psid, messagePayload);
 }
 
