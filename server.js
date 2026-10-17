@@ -20,11 +20,9 @@ const app = express();
 let currentQR = ''; 
 let isConnected = false; 
 
-// ذاكرة البوت لتخزين نتائج البحث والأقفال
 const userSessions = new Map();
 const userLocks = new Map();
 
-// ترويسات متصفح حقيقية لضمان تطابق الـ IP وعدم حظر روابط الفيديو
 const BROWSER_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -34,12 +32,11 @@ const BROWSER_HEADERS = {
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-// 🌟 دالة احترافية لاستخراج الخطأ الأصلي والحقيقي بالكامل
 function getRealError(err) {
     if (!err) return "Unknown Error (Empty)";
     let details = [];
     if (err.response) {
-        details.push(`HTTP Status: ${err.response.status} ${err.response.statusText ? err.response.statusText : ''}`);
+        details.push(`HTTP Status: ${err.response.status}`);
         if (err.response.data) {
             try {
                 let dataStr = typeof err.response.data === 'object'
@@ -49,54 +46,30 @@ function getRealError(err) {
             } catch (e) {}
         }
     }
-    if (err.code) {
-        details.push(`Error Code: ${err.code}`);
-    }
-    if (err.message) {
-        details.push(`Message: ${err.message}`);
-    }
-    if (err.stack) {
-        details.push(`Stack: ${err.stack}`);
-    }
-    if (details.length === 0) {
-        try {
-            return JSON.stringify(err, null, 2);
-        } catch (e) {
-            return String(err);
-        }
-    }
-    return details.join('\n');
+    if (err.stack) details.push(`Stack: ${err.stack}`);
+    else if (err.message) details.push(`Message: ${err.message}`);
+    
+    return details.length > 0 ? details.join('\n') : String(err);
 }
 
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// جلب صفحة الويب مباشرة من IP السيرفر (لتجنب 403 على روابط الفيديو) مع بديل ScraperAPI عند الضرورة
 async function fetchHtmlSmart(targetUrl, SCRAPER_API_KEY) {
     try {
-        const directRes = await axios.get(targetUrl, {
-            headers: BROWSER_HEADERS,
-            httpsAgent: httpsAgent,
-            timeout: 20000
-        });
-        if (directRes.data && String(directRes.data).length > 500) {
-            return directRes.data;
-        }
+        const directRes = await axios.get(targetUrl, { headers: BROWSER_HEADERS, httpsAgent, timeout: 20000 });
+        if (directRes.data && String(directRes.data).length > 500) return directRes.data;
     } catch (directErr) {
-        console.warn("⚠️ الجلب المباشر فشل، جاري التحويل إلى ScraperAPI. السبب الأصلي:", getRealError(directErr));
+        console.warn("⚠️ الجلب المباشر فشل، جاري التحويل إلى ScraperAPI...");
     }
 
     const scraperUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}`;
-    const proxyRes = await axios.get(scraperUrl, {
-        headers: BROWSER_HEADERS,
-        httpsAgent: httpsAgent,
-        timeout: 45000
-    });
+    const proxyRes = await axios.get(scraperUrl, { headers: BROWSER_HEADERS, httpsAgent, timeout: 45000 });
     return proxyRes.data;
 }
 
-app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Awake and Running!'));
+app.get('/', (req, res) => res.send('🤖 WhatsApp Bot is Awake and Running (Firebase Fix)!'));
 
 app.get('/qr', (req, res) => {
     if (isConnected) {
@@ -120,33 +93,41 @@ app.get('/qr', (req, res) => {
 const SCRAPER_API_KEY = "e52e3ecb8172c130934a150b2e7c5f22";
 const FIREBASE_DB_URL = "https://hamza-kr-default-rtdb.firebaseio.com/whatsapp_auth";
 
+// 🌟 المحول الذكي بعد التحديث لمنع Firebase من حذف الكائنات الفارغة
 async function useFastFirebaseAuthState() {
     let memoryKeys = {};
     let creds = null;
 
     try {
-        console.log('📥 جاري تحميل الجلسة في الذاكرة السريعة (RAM)...');
+        console.log('📥 جاري تحميل الجلسة من Firebase...');
         const res = await axios.get(`${FIREBASE_DB_URL}.json`, { timeout: 15000 });
         if (res.data) {
             if (res.data.creds) {
-                creds = JSON.parse(JSON.stringify(res.data.creds), BufferJSON.reviver);
+                // إذا تم تخزينه كنص (التحديث الجديد) أو كائن (القديم)
+                if (typeof res.data.creds === 'string') {
+                    creds = JSON.parse(res.data.creds, BufferJSON.reviver);
+                } else {
+                    creds = JSON.parse(JSON.stringify(res.data.creds), BufferJSON.reviver);
+                }
             }
             if (res.data.keys) {
                 for (const k in res.data.keys) {
-                    memoryKeys[k] = JSON.parse(JSON.stringify(res.data.keys[k]), BufferJSON.reviver);
+                    if (typeof res.data.keys[k] === 'string') {
+                        memoryKeys[k] = JSON.parse(res.data.keys[k], BufferJSON.reviver);
+                    } else {
+                        memoryKeys[k] = JSON.parse(JSON.stringify(res.data.keys[k]), BufferJSON.reviver);
+                    }
                 }
             }
         }
     } catch (err) {
-        console.error("⚠️ خطأ أصلي أثناء قراءة الجلسة من Firebase:", getRealError(err));
+        console.error("⚠️ خطأ أصلي أثناء قراءة الجلسة:", getRealError(err));
     }
 
     if (!creds) {
         creds = initAuthCreds();
-        const str = JSON.stringify(creds, BufferJSON.replacer);
-        axios.put(`${FIREBASE_DB_URL}/creds.json`, JSON.parse(str)).catch(err => {
-            console.error("⚠️ خطأ أصلي أثناء حفظ creds في Firebase:", getRealError(err));
-        });
+        const credsStr = JSON.stringify(creds, BufferJSON.replacer);
+        axios.put(`${FIREBASE_DB_URL}/creds.json`, JSON.stringify(credsStr)).catch(()=>{});
     }
 
     let pendingUpdates = {};
@@ -160,9 +141,7 @@ async function useFastFirebaseAuthState() {
             syncTimer = null;
             try {
                 await axios.patch(`${FIREBASE_DB_URL}/keys.json`, payload);
-            } catch (err) {
-                console.error("⚠️ خطأ أصلي أثناء مزامنة المفاتيح في Firebase:", getRealError(err));
-            }
+            } catch (err) {}
         }, 1500);
     };
 
@@ -193,8 +172,8 @@ async function useFastFirebaseAuthState() {
                             const keyName = `${category}-${safeId}`;
                             if (value) {
                                 memoryKeys[keyName] = value;
-                                const serialized = JSON.parse(JSON.stringify(value, BufferJSON.replacer));
-                                pendingUpdates[keyName] = serialized;
+                                // 🌟 حفظ البيانات على شكل نص (String) لخداع فايربيس
+                                pendingUpdates[keyName] = JSON.stringify(value, BufferJSON.replacer);
                             } else {
                                 delete memoryKeys[keyName];
                                 pendingUpdates[keyName] = null;
@@ -206,18 +185,12 @@ async function useFastFirebaseAuthState() {
             }
         },
         saveCreds: () => {
-            const str = JSON.stringify(creds, BufferJSON.replacer);
-            axios.put(`${FIREBASE_DB_URL}/creds.json`, JSON.parse(str)).catch(err => {
-                console.error("⚠️ خطأ أصلي أثناء تحديث creds:", getRealError(err));
-            });
+            const credsStr = JSON.stringify(creds, BufferJSON.replacer);
+            axios.put(`${FIREBASE_DB_URL}/creds.json`, JSON.stringify(credsStr)).catch(()=>{});
         },
         clearSession: async () => {
             memoryKeys = {};
-            try {
-                await axios.delete(`${FIREBASE_DB_URL}.json`);
-            } catch (err) {
-                console.error("⚠️ خطأ أصلي أثناء مسح الجلسة:", getRealError(err));
-            }
+            try { await axios.delete(`${FIREBASE_DB_URL}.json`); } catch (err) {}
         }
     };
 }
@@ -231,7 +204,7 @@ async function connectToWhatsApp() {
         sock = makeWASocket({
             auth: state,
             printQRInTerminal: false,
-            logger: pino({ level: 'error' }),
+            logger: pino({ level: 'silent' }),
             browser: ['WhatsApp Bot', 'Chrome', '1.0.0'],
             keepAliveIntervalMs: 15000,
             markOnlineOnConnect: true,
@@ -257,13 +230,10 @@ async function connectToWhatsApp() {
                     statusCode = lastDisconnect.error.output.statusCode;
                 }
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-                console.error("⚠️ انقطع اتصال واتساب. الخطأ الأصلي الكامل:\n", getRealError(lastDisconnect ? lastDisconnect.error : "Unknown Disconnect"));
 
                 if (shouldReconnect) {
                     let errStr = getRealError(lastDisconnect ? lastDisconnect.error : '');
-                    let isBadMac = errStr.includes('Bad MAC');
-                    let isDecrypt = errStr.includes('decrypt');
-                    if (isBadMac ? true : isDecrypt) {
+                    if (errStr.includes('Bad MAC') || errStr.includes('decrypt') || errStr.includes('_deserialize_chains')) {
                         console.log('🔄 تلف في الجلسة. جاري مسحها لطلب كود جديد...');
                         await clearSession();
                     }
@@ -287,9 +257,7 @@ async function connectToWhatsApp() {
             if (!msg.message) return;
             if (msg.key.fromMe) return;
 
-            if (msg.messageTimestamp && msg.messageTimestamp < Math.floor(Date.now() / 1000) - 60) {
-                return;
-            }
+            if (msg.messageTimestamp && msg.messageTimestamp < Math.floor(Date.now() / 1000) - 60) return;
 
             const sender_psid = msg.key.remoteJid;
             
@@ -308,7 +276,6 @@ async function connectToWhatsApp() {
 
             let session = userSessions.get(sender_psid);
 
-            // 1. معالجة أمر الرابط (2 link أو link 2)
             let linkMatch1 = userText.match(/^(\d+)\s+link$/i);
             let linkMatch2 = userText.match(/^link\s+(\d+)$/i);
             let linkNum = null;
@@ -320,15 +287,14 @@ async function connectToWhatsApp() {
                     let item = session.items[linkNum - 1];
                     await sendLinkDetails(sender_psid, item, linkNum);
                 } else {
-                    await sendTextMessage(sender_psid, "❌ لم يتم العثور على هذا الرقم في قائمة البحث الحالية. ابحث أولاً ثم اختر من 1 إلى 10.");
+                    await sendTextMessage(sender_psid, "❌ الرقم غير متوفر في البحث الحالي.");
                 }
                 return;
             }
 
-            // 2. فحص القفل لمنع التضارب
             const currentTask = userLocks.get(sender_psid);
             if (currentTask) {
-                await sendTextMessage(sender_psid, `⏳ أنا أعمل حالياً على: (${currentTask})...\nيرجى الانتظار حتى أنتهي لعدم حدوث تضارب!`);
+                await sendTextMessage(sender_psid, `⏳ أنا أعمل حالياً على: (${currentTask})...\nيرجى الانتظار!`);
                 return;
             }
 
@@ -338,32 +304,32 @@ async function connectToWhatsApp() {
 
                 if (!isNaN(num) && String(num) === userText && num >= 1 && num <= 15 && session) {
                     if (session.type === 'search' && session.items && session.items[num - 1]) {
-                        userLocks.set(sender_psid, `فحص جودات الفيديو رقم ${num}`);
+                        userLocks.set(sender_psid, `فحص جودات الفيديو ${num}`);
                         await fetchQualitiesAndSendOptions(sender_psid, session.items[num - 1]);
                     } else if (session.type === 'quality' && session.qualities && session.qualities[num - 1]) {
-                        userLocks.set(sender_psid, `تحميل ومعالجة الفيديو بالجودة رقم ${num}`);
+                        userLocks.set(sender_psid, `معالجة جودة ${num}`);
                         await downloadAndCompressVideo(sender_psid, session.qualities[num - 1], session.selectedVideo);
                     } else {
-                        await sendTextMessage(sender_psid, "❌ الرقم غير موجود ضمن الخيارات المعروضة حالياً.");
+                        await sendTextMessage(sender_psid, "❌ الرقم غير موجود ضمن الخيارات المعروضة.");
                     }
                 }
                 else if (lowerText === 'nex') {
                     if (session && session.searchPage !== undefined) {
                         let nextP = session.searchPage + 1;
-                        userLocks.set(sender_psid, `جلب الصفحة رقم ${nextP}`);
+                        userLocks.set(sender_psid, `جلب صفحة ${nextP}`);
                         await fetchAndSendVideos(sender_psid, nextP, session.searchQuery);
                     } else {
-                        await sendTextMessage(sender_psid, "❌ لا يوجد بحث سابق لعرض المزيد منه.");
+                        await sendTextMessage(sender_psid, "❌ لا يوجد بحث سابق لعرض المزيد.");
                     }
                 }
                 else {
                     let isWelcome = userText === 'مرحبا';
                     let isHi = lowerText === 'hi';
                     if (isWelcome ? true : isHi) {
-                        userLocks.set(sender_psid, 'جلب الصفحة الرئيسية');
+                        userLocks.set(sender_psid, 'جلب الرئيسية');
                         await fetchAndSendVideos(sender_psid, 1, "");
                     } else if (userText.startsWith('http')) {
-                        await sendTextMessage(sender_psid, "❌ البوت يعمل عبر البحث المباشر أو الأرقام فقط.");
+                        await sendTextMessage(sender_psid, "❌ البوت يعمل عبر البحث المباشر فقط.");
                     } else {
                         let finalQuery = userText;
                         if (lowerText === 'a') finalQuery = 'anal';
@@ -375,9 +341,7 @@ async function connectToWhatsApp() {
                     }
                 }
             } catch (error) {
-                const realErr = getRealError(error);
-                console.error("❌ خطأ أصلي أثناء معالجة الرسالة:\n", realErr);
-                await sendTextMessage(sender_psid, `❌ الخطأ الأصلي:\n${realErr}`);
+                console.error("❌ خطأ أصلي أثناء معالجة الرسالة:\n", getRealError(error));
             } finally {
                 userLocks.delete(sender_psid);
             }
@@ -391,10 +355,18 @@ async function connectToWhatsApp() {
 connectToWhatsApp();
 
 process.on('uncaughtException', (err) => {
-    console.error("🔥 خطأ غير معالج (uncaughtException - الرد الأصلي):\n", getRealError(err));
+    console.error("🔥 خطأ غير معالج (uncaughtException):\n", getRealError(err));
 });
-process.on('unhandledRejection', (reason) => {
-    console.error("🔥 وعد مرفوض (unhandledRejection - الرد الأصلي):\n", getRealError(reason));
+
+// 🌟 هذا هو الحدث الذي سيمسح الجلسة التالفة بمجرد حدوث انهيار في Firebase
+process.on('unhandledRejection', async (reason) => {
+    console.error("🔥 وعد مرفوض (unhandledRejection):\n", getRealError(reason));
+    let errStr = String(reason);
+    if (errStr.includes('_deserialize_chains') || errStr.includes('Cannot convert undefined or null to object')) {
+        console.log('🔄 تم اكتشاف جلسة تالفة بسبب سياسة Firebase. جاري مسحها بالكامل للبدء من جديد...');
+        try { await axios.delete(`${FIREBASE_DB_URL}.json`); } catch(e){}
+        process.exit(1); // إغلاق السيرفر ليقلع من جديد بكود QR نظيف
+    }
 });
 
 async function sendLinkDetails(sender_psid, item, indexNum) {
@@ -405,21 +377,13 @@ async function sendLinkDetails(sender_psid, item, indexNum) {
             try {
                 const html = await fetchHtmlSmart(item.link, SCRAPER_API_KEY);
                 let uploaderMatch = html.match(/setUploaderName\(['"]([^'"]+)['"]\)/);
-                if (uploaderMatch && uploaderMatch[1]) {
-                    channelName = uploaderMatch[1];
-                }
-            } catch (innerErr) {
-                console.error("⚠️ خطأ أصلي أثناء جلب اسم القناة:", getRealError(innerErr));
-            }
+                if (uploaderMatch && uploaderMatch[1]) channelName = uploaderMatch[1];
+            } catch (innerErr) {}
         }
         let finalChannel = channelName ? channelName : 'غير متوفر';
         const msg = `📌 *تفاصيل الخيار [ ${indexNum} ]:*\n\n📝 *العنوان:* ${item.title}\n📺 *القناة:* ${finalChannel}\n⏱️ *المدة:* ${item.duration}\n🔗 *الرابط:* ${item.link}`;
         await sendTextMessage(sender_psid, msg);
-    } catch (err) {
-        const realErr = getRealError(err);
-        console.error("❌ خطأ أصلي في sendLinkDetails:\n", realErr);
-        await sendTextMessage(sender_psid, `❌ الخطأ الأصلي في جلب الرابط:\n${realErr}`);
-    }
+    } catch (err) {}
 }
 
 async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
@@ -463,7 +427,6 @@ async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
             let imgUrl = $(element).find('.thumb img').attr('data-src');
             if (!imgUrl) imgUrl = $(element).find('.thumb img').attr('src');
             
-            // التأكد من أن الرابط هو رابط فيديو فعلي وليس قناة أو إعلان
             if (link && imgUrl && link.includes('/video')) {
                 let fullLink = link.startsWith('http') ? link : 'https://www.xvideos.com' + link;
                 elements.push({ link: fullLink, title: title, channel: channel, duration: duration, image: imgUrl });
@@ -482,58 +445,39 @@ async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
                 await delay(800);
             }
 
-            await sendTextMessage(
-                sender_psid,
-                `✅ تم عرض ${elements.length} فيديوهات!\n\n` +
-                `📥 *للتحميل:* أرسل رقم الفيديو (1 إلى ${elements.length})\n` +
-                `🔗 *للتفاصيل والرابط:* أرسل الرقم متبوعاً بـ link (مثال: 2 link)\n` +
-                `⏭️ *للمزيد:* أرسل كلمة nex`
-            );
+            await sendTextMessage(sender_psid, `✅ تم عرض ${elements.length} فيديوهات!\n\n📥 *للتحميل:* أرسل رقم الفيديو\n🔗 *للتفاصيل:* أرسل الرقم مع كلمة link (مثال: 2 link)\n⏭️ *للمزيد:* أرسل nex`);
         } else {
-            await sendTextMessage(sender_psid, `❌ لم يتم العثور على عناصر فيديو في الصفحة المطلوبة: ${targetUrl}`);
+            await sendTextMessage(sender_psid, `❌ لم يتم العثور على فيديوهات.`);
         }
     } catch (error) {
-        const realErr = getRealError(error);
-        console.error("❌ خطأ أصلي في fetchAndSendVideos:\n", realErr);
-        await sendTextMessage(sender_psid, `❌ الخطأ الأصلي أثناء البحث:\n${realErr}`);
+        console.error("❌ خطأ أصلي في البحث:\n", getRealError(error));
+        await sendTextMessage(sender_psid, `❌ الخطأ الأصلي أثناء البحث:\n${getRealError(error)}`);
     }
 }
 
-// 🌟 استخراج الجودات الفعلية الموجودة في صفحة الفيديو ديناميكياً بدون أي جودات ثابتة
 async function fetchQualitiesAndSendOptions(sender_psid, videoItem) {
     try {
-        await sendTextMessage(sender_psid, "⏳ جاري استخراج الجودات الفعلية المتاحة من صفحة الفيديو...");
+        await sendTextMessage(sender_psid, "⏳ جاري استخراج الجودات الحقيقية المتوفرة...");
 
-        // جلب صفحة الفيديو مباشرة من IP السيرفر لتكون الروابط مرخصة لنفس الـ IP
         const html = await fetchHtmlSmart(videoItem.link, SCRAPER_API_KEY);
 
         let durationSec = 0;
         let durMatch = html.match(/setVideoDuration\((\d+(?:\.\d+)?)\)/);
-        if (durMatch && durMatch[1]) {
-            durationSec = parseFloat(durMatch[1]);
-        }
+        if (durMatch && durMatch[1]) durationSec = parseFloat(durMatch[1]);
 
         let uploaderMatch = html.match(/setUploaderName\(['"]([^'"]+)['"]\)/);
-        if (uploaderMatch && uploaderMatch[1]) {
-            videoItem.channel = uploaderMatch[1];
-        }
+        if (uploaderMatch && uploaderMatch[1]) videoItem.channel = uploaderMatch[1];
 
         let sessionQualities = [];
         let extractionErrors = [];
 
-        // 1. قراءة ملف البث الديناميكي HLS (يحتوي على كل الجودات الحقيقية المتوفرة للفيديو)
         let matchHLS = html.match(/setVideoHLS\(['"]([^'"]+)['"]\)/);
         if (matchHLS && matchHLS[1]) {
             const hlsMasterUrl = matchHLS[1];
             const baseUrl = hlsMasterUrl.substring(0, hlsMasterUrl.lastIndexOf('/') + 1);
 
             try {
-                const m3u8Res = await axios.get(hlsMasterUrl, {
-                    headers: BROWSER_HEADERS,
-                    httpsAgent: httpsAgent,
-                    timeout: 20000
-                });
-
+                const m3u8Res = await axios.get(hlsMasterUrl, { headers: BROWSER_HEADERS, httpsAgent, timeout: 20000 });
                 const lines = String(m3u8Res.data).split('\n');
                 let pendingInfo = null;
 
@@ -559,27 +503,17 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoItem) {
                         if (pendingInfo.bandwidth > 0 && durationSec > 0) {
                             sizeMB = ((pendingInfo.bandwidth * durationSec) / (8 * 1024 * 1024)).toFixed(1);
                         }
-
-                        sessionQualities.push({
-                            label: pendingInfo.label,
-                            url: streamUrl,
-                            sizeMB: sizeMB,
-                            isHLS: true,
-                            height: pendingInfo.height
-                        });
+                        sessionQualities.push({ label: pendingInfo.label, url: streamUrl, sizeMB: sizeMB, isHLS: true, height: pendingInfo.height });
                         pendingInfo = null;
                     }
                 }
             } catch (hlsErr) {
-                let errDetail = getRealError(hlsErr);
-                console.error("⚠️ خطأ أصلي أثناء قراءة ملف HLS Master:\n", errDetail);
-                extractionErrors.push(`HLS Error: ${errDetail}`);
+                extractionErrors.push(`HLS Error: ${getRealError(hlsErr)}`);
             }
         } else {
-            extractionErrors.push("لم يتم العثور على setVideoHLS في سورس الصفحة.");
+            extractionErrors.push("لم أجد رابط HLS في الصفحة.");
         }
 
-        // إزالة أي تكرار في الجودات وترتيبها تصاعدياً حسب الدقة الفعلية
         let uniqueQualities = [];
         let seenLabels = {};
         for (let i = 0; i < sessionQualities.length; i++) {
@@ -592,28 +526,21 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoItem) {
         uniqueQualities.sort((a, b) => a.height - b.height);
         sessionQualities = uniqueQualities;
 
-        // 2. إذا لم يتوفر HLS في هذا الفيديو، نستخرج روابط MP4 المباشرة الموجودة في السورس
         if (sessionQualities.length === 0) {
             let matchLow = html.match(/setVideoUrlLow\(['"]([^'"]+)['"]\)/);
             let matchHigh = html.match(/setVideoUrlHigh\(['"]([^'"]+)['"]\)/);
             let directList = [];
-
-            if (matchLow && matchLow[1]) directList.push({ label: "MP4 Low (SD)", url: matchLow[1] });
-            if (matchHigh && matchHigh[1]) directList.push({ label: "MP4 High (HD)", url: matchHigh[1] });
+            if (matchLow && matchLow[1]) directList.push({ label: "MP4 SD", url: matchLow[1] });
+            if (matchHigh && matchHigh[1]) directList.push({ label: "MP4 HD", url: matchHigh[1] });
 
             for (let i = 0; i < directList.length; i++) {
                 let q = directList[i];
                 try {
-                    const headRes = await axios.head(q.url, {
-                        headers: BROWSER_HEADERS,
-                        httpsAgent: httpsAgent,
-                        timeout: 10000
-                    });
+                    const headRes = await axios.head(q.url, { headers: BROWSER_HEADERS, httpsAgent, timeout: 10000 });
                     let sizeBytes = headRes.headers['content-length'];
                     let sizeMB = sizeBytes ? (sizeBytes / (1024 * 1024)).toFixed(1) : "?";
                     sessionQualities.push({ label: q.label, url: q.url, sizeMB: sizeMB, isHLS: false });
-                } catch (headErr) {
-                    extractionErrors.push(`MP4 Head (${q.label}): ${getRealError(headErr)}`);
+                } catch (e) {
                     sessionQualities.push({ label: q.label, url: q.url, sizeMB: "?", isHLS: false });
                 }
             }
@@ -622,31 +549,22 @@ async function fetchQualitiesAndSendOptions(sender_psid, videoItem) {
         if (sessionQualities.length > 0) {
             let currentSession = userSessions.get(sender_psid);
             userSessions.set(sender_psid, {
-                type: 'quality',
-                qualities: sessionQualities,
-                selectedVideo: videoItem,
+                type: 'quality', qualities: sessionQualities, selectedVideo: videoItem,
                 items: currentSession ? currentSession.items : [],
                 searchPage: currentSession ? currentSession.searchPage : 1,
                 searchQuery: currentSession ? currentSession.searchQuery : ""
             });
             
-            let msg = `✅ *الجودات الحقيقية المتوفرة لهذا الفيديو (${sessionQualities.length}):*\nأرسل رقم الجودة للتحميل:\n\n`;
+            let msg = `✅ *الجودات المتاحة (${sessionQualities.length}):*\nأرسل الرقم للتحميل:\n\n`;
             sessionQualities.forEach((q, index) => {
-                msg += `*[ ${index + 1} ]* 📥 ${q.label} — (الحجم التقريبي: ${q.sizeMB}MB)\n`;
+                msg += `*[ ${index + 1} ]* 📥 ${q.label} — (${q.sizeMB}MB)\n`;
             });
             await sendTextMessage(sender_psid, msg);
         } else {
-            let errReport = extractionErrors.join('\n---\n');
-            console.error("❌ فشل استخراج الجودات. التفاصيل الأصلية:\n", errReport);
-            await sendTextMessage(
-                sender_psid,
-                `❌ لم يتم العثور على روابط فيديو صالحة.\n🔍 *الخطأ الأصلي من السيرفر:*\n${errReport ? errReport : 'HTML length: ' + String(html).length}`
-            );
+            await sendTextMessage(sender_psid, `❌ فشل استخراج الجودات.\n${extractionErrors.join('\n')}`);
         }
     } catch (error) {
-        const realErr = getRealError(error);
-        console.error("❌ خطأ أصلي في fetchQualitiesAndSendOptions:\n", realErr);
-        await sendTextMessage(sender_psid, `❌ الخطأ الأصلي أثناء فحص الجودات:\n${realErr}`);
+        await sendTextMessage(sender_psid, `❌ الخطأ الأصلي:\n${getRealError(error)}`);
     }
 }
 
@@ -658,38 +576,29 @@ async function downloadAndCompressVideo(sender_psid, qualityObj, videoItem) {
     let thumbPath = path.join('/tmp', `thumb_${timestamp}.jpg`);
 
     try {
-        await sendTextMessage(sender_psid, `📥 جاري تحميل الفيديو بالجودة المختارة (${qualityObj.label})... يرجى الانتظار.`);
+        await sendTextMessage(sender_psid, `📥 جاري التحميل (${qualityObj.label})... يرجى الانتظار.`);
 
         if (qualityObj.isHLS) {
-            // تحميل شرائح HLS عبر Node.js مباشرة لتجنب أخطاء الشبكة في FFmpeg ثم تحويلها إلى MP4
             await downloadHLSInNode(qualityObj.url, rawTsPath, originalPath);
         } else {
             await downloadFileLocally(qualityObj.url, originalPath);
         }
 
-        if (!fs.existsSync(originalPath)) {
-            throw new Error(`الملف المحمل غير موجود على القرص: ${originalPath}`);
-        }
-
         const originalSizeMB = fs.statSync(originalPath).size / (1024 * 1024);
 
         if (originalSizeMB <= 60.0) {
-            await sendTextMessage(sender_psid, `⚡ اكتمل التحميل (${originalSizeMB.toFixed(1)}MB)! جاري تجهيز الغلاف والتشغيل الفوري...`);
+            await sendTextMessage(sender_psid, `⚡ اكتمل التحميل (${originalSizeMB.toFixed(1)}MB)! جاري تهيئة الغلاف...`);
             await remuxFastStart(originalPath, readyPath);
         } else {
-            await sendTextMessage(sender_psid, `⚠️ حجم الفيديو (${originalSizeMB.toFixed(1)}MB) يتجاوز 60MB، جاري ضغطه محلياً...`);
+            await sendTextMessage(sender_psid, `⚠️ حجم الفيديو (${originalSizeMB.toFixed(1)}MB)، جاري ضغطه محلياً...`);
             await compressVideoLocally(originalPath, readyPath, 58.0);
         }
 
         await generateThumbnail(readyPath, thumbPath);
-
-        await sendTextMessage(sender_psid, `🚀 جاري رفع الفيديو (${qualityObj.label}) إلى واتساب...`);
         await uploadVideoToWhatsApp(sender_psid, readyPath, thumbPath, videoItem, qualityObj.label);
 
     } catch (error) {
-        const realErr = getRealError(error);
-        console.error("❌ خطأ أصلي في downloadAndCompressVideo:\n", realErr);
-        await sendTextMessage(sender_psid, `❌ الخطأ الأصلي أثناء تحميل أو معالجة الفيديو:\n${realErr}`);
+        await sendTextMessage(sender_psid, `❌ خطأ المعالجة:\n${getRealError(error)}`);
     } finally {
         if (fs.existsSync(rawTsPath)) fs.unlinkSync(rawTsPath);
         if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
@@ -697,54 +606,30 @@ async function downloadAndCompressVideo(sender_psid, qualityObj, videoItem) {
         if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
 
         let currentSession = userSessions.get(sender_psid);
-        if (currentSession && currentSession.items && currentSession.items.length > 0) {
-            userSessions.set(sender_psid, {
-                type: 'search',
-                items: currentSession.items,
-                searchPage: currentSession.searchPage,
-                searchQuery: currentSession.searchQuery
-            });
+        if (currentSession && currentSession.items) {
+            userSessions.set(sender_psid, { type: 'search', items: currentSession.items, searchPage: currentSession.searchPage, searchQuery: currentSession.searchQuery });
         } else {
             userSessions.delete(sender_psid);
         }
     }
 }
 
-// 🌟 تحميل شرائح البث (HLS Segments) عبر Axios مباشرة ودمجها محلياً بـ FFmpeg دون أخطاء شبكة
 async function downloadHLSInNode(subM3u8Url, rawTsPath, outputMp4Path) {
     const baseUrl = subM3u8Url.substring(0, subM3u8Url.lastIndexOf('/') + 1);
-    const playlistRes = await axios.get(subM3u8Url, {
-        headers: BROWSER_HEADERS,
-        httpsAgent: httpsAgent,
-        timeout: 20000
-    });
-
+    const playlistRes = await axios.get(subM3u8Url, { headers: BROWSER_HEADERS, httpsAgent, timeout: 20000 });
     const lines = String(playlistRes.data).split('\n');
     const segmentUrls = [];
 
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
         if (line && !line.startsWith('#')) {
-            const segUrl = line.startsWith('http') ? line : baseUrl + line;
-            segmentUrls.push(segUrl);
+            segmentUrls.push(line.startsWith('http') ? line : baseUrl + line);
         }
     }
 
-    if (segmentUrls.length === 0) {
-        throw new Error(`قائمة HLS فارغة ولا تحتوي على شرائح فيديو (.ts) من الرابط: ${subM3u8Url}`);
-    }
-
-    // تحميل الشرائح وكتابتها مباشرة على القرص لتوفير الرام (256MB)
     const writer = fs.createWriteStream(rawTsPath);
-
     for (let i = 0; i < segmentUrls.length; i++) {
-        const segUrl = segmentUrls[i];
-        const segRes = await axios.get(segUrl, {
-            headers: BROWSER_HEADERS,
-            httpsAgent: httpsAgent,
-            responseType: 'arraybuffer',
-            timeout: 30000
-        });
+        const segRes = await axios.get(segmentUrls[i], { headers: BROWSER_HEADERS, httpsAgent, responseType: 'arraybuffer', timeout: 30000 });
         writer.write(Buffer.from(segRes.data));
     }
 
@@ -754,55 +639,22 @@ async function downloadHLSInNode(subM3u8Url, rawTsPath, outputMp4Path) {
         writer.on('error', reject);
     });
 
-    // تحويل ملف الـ TS المحلي إلى MP4 جاهز للبث السريع
     await new Promise((resolve, reject) => {
-        ffmpeg(rawTsPath)
-            .outputOptions([
-                '-y',
-                '-c', 'copy',
-                '-bsf:a', 'aac_adtstoasc',
-                '-movflags', '+faststart'
-            ])
-            .save(outputMp4Path)
-            .on('end', () => resolve(outputMp4Path))
-            .on('error', (err) => reject(err));
+        ffmpeg(rawTsPath).outputOptions(['-y', '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', '+faststart']).save(outputMp4Path).on('end', () => resolve(outputMp4Path)).on('error', reject);
     });
 }
 
 function remuxFastStart(inputPath, outputPath) {
     return new Promise((resolve) => {
-        ffmpeg(inputPath)
-            .outputOptions([
-                '-y',
-                '-c', 'copy',
-                '-movflags', '+faststart'
-            ])
-            .save(outputPath)
-            .on('end', () => resolve(outputPath))
-            .on('error', (err) => {
-                console.warn("⚠️ تنبيه أصلي أثناء remuxFastStart:", getRealError(err));
-                fs.copyFileSync(inputPath, outputPath);
-                resolve(outputPath);
-            });
+        ffmpeg(inputPath).outputOptions(['-y', '-c', 'copy', '-movflags', '+faststart']).save(outputPath)
+        .on('end', () => resolve(outputPath))
+        .on('error', () => { fs.copyFileSync(inputPath, outputPath); resolve(outputPath); });
     });
 }
 
 function generateThumbnail(videoPath, thumbPath) {
     return new Promise((resolve) => {
-        ffmpeg(videoPath)
-            .inputOptions(['-ss', '00:00:02'])
-            .outputOptions([
-                '-y',
-                '-vframes', '1',
-                '-vf', 'scale=320:-1',
-                '-q:v', '5'
-            ])
-            .save(thumbPath)
-            .on('end', () => resolve(true))
-            .on('error', (err) => {
-                console.warn("⚠️ تنبيه أصلي أثناء توليد الصورة المصغرة:", getRealError(err));
-                resolve(false);
-            });
+        ffmpeg(videoPath).inputOptions(['-ss', '00:00:02']).outputOptions(['-y', '-vframes', '1', '-vf', 'scale=320:-1', '-q:v', '5']).save(thumbPath).on('end', () => resolve(true)).on('error', () => resolve(false));
     });
 }
 
@@ -810,64 +662,34 @@ function compressVideoLocally(inputPath, outputPath, targetSizeMB) {
     return new Promise((resolve, reject) => {
         ffmpeg.ffprobe(inputPath, (err, metadata) => {
             let targetVideoBitrate = '400k'; 
-            let hasDuration = metadata && metadata.format && metadata.format.duration;
-            if (!err && hasDuration) {
+            let hasDur = metadata && metadata.format && metadata.format.duration;
+            if (!err && hasDur) {
                 let vBitrate = Math.floor((targetSizeMB * 8192) / metadata.format.duration) - 128;
-                let finalBitrate = vBitrate < 120 ? 120 : vBitrate;
-                targetVideoBitrate = finalBitrate + 'k';
+                targetVideoBitrate = (vBitrate < 120 ? 120 : vBitrate) + 'k';
             }
-            ffmpeg(inputPath)
-                .outputOptions([
-                    '-y',
-                    '-c:v', 'libx264',
-                    '-pix_fmt', 'yuv420p',
-                    '-b:v', targetVideoBitrate,
-                    '-preset', 'ultrafast',
-                    '-threads', '2',
-                    '-c:a', 'aac',
-                    '-b:a', '128k',
-                    '-movflags', '+faststart'
-                ])
-                .save(outputPath)
-                .on('end', () => resolve(outputPath))
-                .on('error', reject);
+            ffmpeg(inputPath).outputOptions(['-y', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-b:v', targetVideoBitrate, '-preset', 'ultrafast', '-threads', '2', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart'])
+            .save(outputPath).on('end', () => resolve(outputPath)).on('error', reject);
         });
     });
 }
 
 async function downloadFileLocally(url, destPath) {
     const writer = fs.createWriteStream(destPath);
-    const response = await axios({
-        url: url,
-        method: 'GET',
-        headers: BROWSER_HEADERS,
-        responseType: 'stream',
-        timeout: 300000,
-        httpsAgent: httpsAgent
-    });
+    const response = await axios({ url, method: 'GET', headers: BROWSER_HEADERS, responseType: 'stream', timeout: 300000, httpsAgent });
     response.data.pipe(writer);
-    return new Promise((resolve, reject) => {
-        writer.on('finish', resolve);
-        writer.on('error', reject);
-    });
+    return new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
 }
 
 async function uploadVideoToWhatsApp(sender_psid, filePath, thumbPath, videoItem, qualityLabel) {
     let thumbBuffer = undefined;
-    if (thumbPath && fs.existsSync(thumbPath)) {
-        thumbBuffer = fs.readFileSync(thumbPath);
-    }
+    if (thumbPath && fs.existsSync(thumbPath)) thumbBuffer = fs.readFileSync(thumbPath);
 
     let durationSeconds = undefined;
     try {
         durationSeconds = await new Promise((resolve) => {
             ffmpeg.ffprobe(filePath, (err, metadata) => {
-                let hasDuration = metadata && metadata.format && metadata.format.duration;
-                if (!err && hasDuration) {
-                    resolve(Math.round(metadata.format.duration));
-                } else {
-                    resolve(undefined);
-                }
+                if (!err && metadata?.format?.duration) resolve(Math.round(metadata.format.duration));
+                else resolve(undefined);
             });
         });
     } catch (e) {}
@@ -875,27 +697,19 @@ async function uploadVideoToWhatsApp(sender_psid, filePath, thumbPath, videoItem
     const messagePayload = {
         video: { url: filePath },
         mimetype: 'video/mp4',
-        caption: `✅ *تم التحميل بنجاح!*\n🎞️ الجودة: ${qualityLabel}\n⏱️ المدة: ${videoItem ? videoItem.duration : ''}`
+        caption: `✅ *اكتمل التحميل*\n🎞️ الجودة: ${qualityLabel}\n⏱️ المدة: ${videoItem ? videoItem.duration : ''}`
     };
 
-    if (thumbBuffer) {
-        messagePayload.jpegThumbnail = thumbBuffer;
-    }
-    if (durationSeconds) {
-        messagePayload.seconds = durationSeconds;
-    }
+    if (thumbBuffer) messagePayload.jpegThumbnail = thumbBuffer;
+    if (durationSeconds) messagePayload.seconds = durationSeconds;
 
     await sock.sendMessage(sender_psid, messagePayload);
 }
 
-async function sendTextMessage(sender_psid, text) { 
-    await sock.sendMessage(sender_psid, { text: text }); 
-}
+async function sendTextMessage(sender_psid, text) { await sock.sendMessage(sender_psid, { text: text }); }
 
 const PORT = process.env.PORT ? process.env.PORT : 8080;
 app.listen(PORT, '0.0.0.0', () => { 
     console.log(`🚀 السيرفر يعمل بأقصى سرعة على المنفذ ${PORT}`); 
-    setInterval(async () => {
-        try { await axios.get(`http://localhost:${PORT}/`); } catch (e) {}
-    }, 4 * 60 * 1000);
+    setInterval(async () => { try { await axios.get(`http://localhost:${PORT}/`); } catch (e) {} }, 4 * 60 * 1000);
 });
