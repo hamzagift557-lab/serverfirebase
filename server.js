@@ -230,242 +230,23 @@ async function connectToWhatsApp() {
                         await fetchQualitiesAndSendOptions(sender_psid, session.items[num - 1]);
                     } else if (session.type === 'quality' && session.qualities && session.qualities[num - 1]) {
                         userLocks.set(sender_psid, `معالجة جودة ${num}`);
-                        await downloadAndCompressVideo(sender_psid, session.qualities[num - 1], session.selectedVideo);
-                    } else await sendTextMessage(sender_psid, "❌ الرقم غير موجود ضمن الخيارات المعروضة.");
-                } else if (lowerText === 'nex') {
-                    if (session && session.searchPage !== undefined) {
-                        let nextP = session.searchPage + 1;
-                        userLocks.set(sender_psid, `جلب صفحة ${nextP}`);
-                        await fetchAndSendVideos(sender_psid, nextP, session.searchQuery);
-                    } else await sendTextMessage(sender_psid, "❌ لا يوجد بحث سابق لعرض المزيد.");
-                } else {
-                    let isWelcome = userText === 'مرحبا';
-                    let isHi = lowerText === 'hi';
-                    if (isWelcome ? true : isHi) {
-                        userLocks.set(sender_psid, 'جلب الرئيسية');
-                        await fetchAndSendVideos(sender_psid, 1, "");
-                    } else if (userText.startsWith('http')) {
-                        await sendTextMessage(sender_psid, "❌ البوت يعمل عبر البحث المباشر فقط.");
-                    } else {
-                        let finalQuery = userText;
-                        if (lowerText === 'a') finalQuery = 'anal';
-                        if (lowerText === 's') finalQuery = 'sex';
-                        if (lowerText === 'p') finalQuery = 'porn';
-                        userLocks.set(sender_psid, `البحث عن "${finalQuery}"`);
-                        await fetchAndSendVideos(sender_psid, 1, finalQuery);
-                    }
-                }
-            } catch (error) {} finally { userLocks.delete(sender_psid); }
-        });
-    } catch (err) {}
-}
-
-connectToWhatsApp();
-
-process.on('uncaughtException', (err) => { console.error("🔥 uncaughtException:\n", getRealError(err)); });
-process.on('unhandledRejection', async (reason) => {
-    let errStr = String(reason);
-    if (errStr.includes('_deserialize_chains') || errStr.includes('Cannot convert undefined')) {
-        try { await axios.delete(`${FIREBASE_DB_URL}.json`); } catch(e){}
-        process.exit(1); 
-    }
-});
-
-async function sendLinkDetails(sender_psid, item, indexNum) {
-    try {
-        let channelName = item.channel;
-        if (!channelName ? true : channelName === "غير متوفر") {
-            try {
-                const html = await fetchHtmlSmart(item.link, SCRAPER_API_KEY);
-                let uploaderMatch = html.match(/setUploaderName\(['"]([^'"]+)['"]\)/);
-                if (uploaderMatch && uploaderMatch[1]) channelName = uploaderMatch[1];
-            } catch (innerErr) {}
-        }
-        let finalChannel = channelName ? channelName : 'غير متوفر';
-        const msg = `📌 *تفاصيل الخيار [ ${indexNum} ]:*\n\n📝 *العنوان:* ${item.title}\n📺 *القناة:* ${finalChannel}\n⏱️ *المدة:* ${item.duration}\n🔗 *الرابط:* ${item.link}`;
-        await sendTextMessage(sender_psid, msg);
-    } catch (err) {}
-}
-
-async function fetchAndSendVideos(sender_psid, page = 1, searchQuery = "") {
-    try {
-        let targetUrl = 'https://www.xvideos.com/';
-        if (searchQuery !== "") {
-            let p = page - 1;
-            targetUrl = `https://www.xvideos.com/?k=${encodeURIComponent(searchQuery)}`;
-            if (p > 0) targetUrl = targetUrl + '&p=' + p;
-        } else if (page > 1) {
-            let p = page - 1;
-            targetUrl = `https://www.xvideos.com/new/${p}/`;
-        }
-
-        let searchLabel = searchQuery !== "" ? `(${searchQuery})` : `الرئيسية`;
-        await sendTextMessage(sender_psid, `⚡ جاري البحث عن ${searchLabel} - صفحة ${page}...`);
-
-        const htmlData = await fetchHtmlSmart(targetUrl, SCRAPER_API_KEY);
-        const $ = cheerio.load(htmlData);
-        let elements = [];
-        
-        $('.thumb-block').toArray().forEach(element => {
-            if (elements.length >= 10) return;
-            let titleEl = $(element).find('.title a');
-            let link = titleEl.attr('href');
-            let titleAttr = titleEl.attr('title');
-            let titleText = titleEl.text().trim();
-            let title = titleAttr ? titleAttr : (titleText ? titleText : "بدون عنوان");
-            let durationText = $(element).find('.duration').text().trim();
-            let duration = durationText ? durationText : "غير محدد";
-            let ch1 = $(element).find('.metadata .name').text().trim();
-            let ch2 = $(element).find('.uploader .name').text().trim();
-            let ch3 = $(element).find('.name').first().text().trim();
-            let channel = ch1 ? ch1 : (ch2 ? ch2 : (ch3 ? ch3 : "غير متوفر"));
-            let imgUrl = $(element).find('.thumb img').attr('data-src');
-            if (!imgUrl) imgUrl = $(element).find('.thumb img').attr('src');
-            
-            if (link && imgUrl && link.includes('/video')) {
-                let fullLink = link.startsWith('http') ? link : 'https://www.xvideos.com' + link;
-                elements.push({ link: fullLink, title: title, channel: channel, duration: duration, image: imgUrl });
-            }
-        });
-
-        if (elements.length > 0) {
-            userSessions.set(sender_psid, { type: 'search', items: elements, searchPage: page, searchQuery: searchQuery });
-            for (let i = 0; i < elements.length; i++) {
-                try { await sock.sendPresenceUpdate('composing', sender_psid); } catch (e) {}
-                await sock.sendMessage(sender_psid, { image: { url: elements[i].image }, caption: `🎬 خيار رقم [ ${i + 1} ]\n⏱️ المدة: ${elements[i].duration}` });
-                await delay(800);
-            }
-            await sendTextMessage(sender_psid, `✅ تم عرض ${elements.length} فيديوهات!\n\n📥 *للتحميل:* أرسل رقم الفيديو\n🔗 *للتفاصيل:* أرسل الرقم مع كلمة link (مثال: 2 link)\n⏭️ *للمزيد:* أرسل nex`);
-        } else await sendTextMessage(sender_psid, `❌ لم يتم العثور على فيديوهات.`);
-    } catch (error) {
-        await sendTextMessage(sender_psid, `❌ الخطأ أثناء البحث:\n${getRealError(error)}`);
-    }
-}
-
-// 🌟 تعديل هنا: نقوم بحفظ format_id الخاص بـ yt-dlp لكي نستخدمه في التحميل لاحقاً
-async function fetchQualitiesAndSendOptions(sender_psid, videoItem) {
-    try {
-        await sendTextMessage(sender_psid, "⏳ جاري استخراج الجودات عبر المحرك الذكي...");
-        let sessionQualities = [];
-        let extractionErrors = [];
-
-        try {
-            const info = await youtubedl(videoItem.link, {
-                dumpSingleJson: true,
-                noWarnings: true,
-                noCheckCertificates: true,
-                referer: 'https://www.xvideos.com/'
-            });
-
-            if (info && info.formats) {
-                let seenHeights = {};
-                info.formats.forEach(f => {
-                    let h = f.height;
-                    let url = f.url;
-                    if (h && url && h >= 144 && f.vcodec !== 'none') {
-                        if (!seenHeights[h]) {
-                            seenHeights[h] = true;
-                            let sizeMB = "?";
-                            if (f.filesize) sizeMB = (f.filesize / 1048576).toFixed(1);
-                            else if (f.filesize_approx) sizeMB = (f.filesize_approx / 1048576).toFixed(1);
-                            
-                            sessionQualities.push({ 
-                                label: `${h}p`, 
-                                url: url, 
-                                sizeMB: sizeMB, 
-                                isYtDlp: true, // 🌟 تفعيل المحرك الذكي
-                                format_id: f.format_id, // 🌟 حفظ رمز الجودة (مثل: 136)
-                                height: h 
-                            });
-                        }
-                    }
-                });
-            }
-        } catch (ytErr) {
-            extractionErrors.push(`YTDL Error: ${getRealError(ytErr)}`);
-            console.log("⚠️ فشل محرك yt-dlp، جاري التحويل للمحرك اليدوي...");
-        }
-
-        if (sessionQualities.length === 0) {
-            const html = await fetchHtmlSmart(videoItem.link, SCRAPER_API_KEY);
-            let durationSec = 0;
-            let durMatch = html.match(/setVideoDuration\((\d+(?:\.\d+)?)\)/);
-            if (durMatch && durMatch[1]) durationSec = parseFloat(durMatch[1]);
-
-            let matchHLS = html.match(/setVideoHLS\(['"]([^'"]+)['"]\)/);
-            if (matchHLS && matchHLS[1]) {
-                const hlsMasterUrl = matchHLS[1];
-                const baseUrl = hlsMasterUrl.substring(0, hlsMasterUrl.lastIndexOf('/') + 1);
-                try {
-                    const m3u8Res = await axios.get(hlsMasterUrl, { headers: BROWSER_HEADERS, httpsAgent, timeout: 20000 });
-                    const lines = String(m3u8Res.data).split('\n');
-                    let pendingInfo = null;
-                    for (let i = 0; i < lines.length; i++) {
-                        const line = lines[i].trim();
-                        if (line.startsWith('#EXT-X-STREAM-INF:')) {
-                            let resMatch = line.match(/RESOLUTION=\d+x(\d+)/);
-                            let bwMatch = line.match(/BANDWIDTH=(\d+)/);
-                            let height = resMatch && resMatch[1] ? parseInt(resMatch[1]) : 0;
-                            let bandwidth = bwMatch && bwMatch[1] ? parseInt(bwMatch[1]) : 0;
-                            pendingInfo = { label: `${height}p`, height, bandwidth };
-                        } else if (line && !line.startsWith('#') && pendingInfo) {
-                            let streamUrl = line.startsWith('http') ? line : baseUrl + line;
-                            let sizeMB = "?";
-                            if (pendingInfo.bandwidth > 0 && durationSec > 0) sizeMB = ((pendingInfo.bandwidth * durationSec) / (8 * 1024 * 1024)).toFixed(1);
-                            sessionQualities.push({ label: pendingInfo.label, url: streamUrl, sizeMB: sizeMB, isYtDlp: false, isHLS: true, height: pendingInfo.height });
-                            pendingInfo = null;
-                        }
-                    }
-                } catch (hlsErr) {}
-            }
-
-            if (sessionQualities.length === 0) {
-                let matchLow = html.match(/setVideoUrlLow\(['"]([^'"]+)['"]\)/);
-                let matchHigh = html.match(/setVideoUrlHigh\(['"]([^'"]+)['"]\)/);
-                if (matchLow && matchLow[1]) sessionQualities.push({ label: "360p (SD)", url: matchLow[1], sizeMB: "?", isYtDlp: false, isHLS: false, height: 360 });
-                if (matchHigh && matchHigh[1]) sessionQualities.push({ label: "720p (HD)", url: matchHigh[1], sizeMB: "?", isYtDlp: false, isHLS: false, height: 720 });
-            }
-        }
-
-        sessionQualities.sort((a, b) => a.height - b.height);
-
-        if (sessionQualities.length > 0) {
-            let currentSession = userSessions.get(sender_psid);
-            userSessions.set(sender_psid, {
-                type: 'quality', qualities: sessionQualities, selectedVideo: videoItem,
-                items: currentSession ? currentSession.items : [],
-                searchPage: currentSession ? currentSession.searchPage : 1,
-                searchQuery: currentSession ? currentSession.searchQuery : ""
-            });
-            
-            let msg = `✅ *الجودات المتاحة (${sessionQualities.length}):*\nأرسل الرقم للتحميل:\n\n`;
-            sessionQualities.forEach((q, index) => { msg += `*[ ${index + 1} ]* 📥 جودة ${q.label} — (الحجم التقريبي: ${q.sizeMB}MB)\n`; });
-            await sendTextMessage(sender_psid, msg);
-        } else await sendTextMessage(sender_psid, `❌ فشل استخراج الجودات.\n${extractionErrors.join('\n')}`);
-    } catch (error) {
-        await sendTextMessage(sender_psid, `❌ الخطأ الأصلي:\n${getRealError(error)}`);
-    }
-}
-
-// 🌟 تعديل جذري: تكليف محرك yt-dlp بتحميل الفيديو بالكامل!
+                      // 🌟 المحرك الجديد: تحميل وإرسال ذكي بدون ضغط (لمنع انهيار السيرفر SIGSEGV)
 async function downloadAndCompressVideo(sender_psid, qualityObj, videoItem) {
     const timestamp = Date.now();
-    let originalPath = path.join('/tmp', `orig_${timestamp}.mp4`);
-    let readyPath = path.join('/tmp', `ready_${timestamp}.mp4`);
+    let originalPath = path.join('/tmp', `vid_${timestamp}.mp4`);
     let thumbPath = path.join('/tmp', `thumb_${timestamp}.jpg`);
 
     try {
-        await sendTextMessage(sender_psid, `📥 جاري التحميل (${qualityObj.label}) عبر المحرك الذكي... يرجى الانتظار.`);
+        await sendTextMessage(sender_psid, `📥 جاري التحميل (${qualityObj.label}) بجودته الأصلية... يرجى الانتظار.`);
 
-        // 🌟 إذا كانت الجودة قادمة من المحرك، دعه يحملها!
+        // تحميل الفيديو
         if (qualityObj.isYtDlp && qualityObj.format_id) {
             await youtubedl(videoItem.link, {
                 format: qualityObj.format_id,
                 output: originalPath,
                 noWarnings: true,
                 noCheckCertificates: true,
-                referer: 'https://www.xvideos.com/',
-                ffmpegLocation: ffmpegStatic // السماح للمحرك باستخدام ffmpeg لدمج الأجزاء
+                referer: 'https://www.xvideos.com/'
             });
         } else if (qualityObj.isHLS) {
             await downloadHLSInNode(qualityObj.url, path.join('/tmp', `raw_${timestamp}.ts`), originalPath);
@@ -474,114 +255,66 @@ async function downloadAndCompressVideo(sender_psid, qualityObj, videoItem) {
         }
 
         if (!fs.existsSync(originalPath)) {
-            throw new Error("ملف الفيديو لم يتم إنشاؤه بنجاح على السيرفر.");
+            throw new Error("ملف الفيديو لم يتم تنزيله بنجاح.");
         }
 
-        const originalSizeMB = fs.statSync(originalPath).size / (1024 * 1024);
-        if (originalSizeMB <= 60.0) {
-            await sendTextMessage(sender_psid, `⚡ اكتمل التحميل (${originalSizeMB.toFixed(1)}MB)! جاري تهيئة الغلاف...`);
-            await remuxFastStart(originalPath, readyPath);
+        const fileSizeMB = fs.statSync(originalPath).size / (1024 * 1024);
+        await generateThumbnail(originalPath, thumbPath);
+
+        // 🌟 الخدعة الذكية: إرسال كملف إذا كان كبيراً لتجنب الضغط وانهيار السيرفر
+        if (fileSizeMB <= 60.0) {
+            await sendTextMessage(sender_psid, `⚡ اكتمل التحميل (${fileSizeMB.toFixed(1)}MB)! جاري الإرسال كفيديو مباشر...`);
+            await uploadVideoToWhatsApp(sender_psid, originalPath, thumbPath, videoItem, qualityObj.label, false);
         } else {
-            await sendTextMessage(sender_psid, `⚠️ حجم الفيديو (${originalSizeMB.toFixed(1)}MB)، جاري ضغطه محلياً...`);
-            await compressVideoLocally(originalPath, readyPath, 58.0);
+            await sendTextMessage(sender_psid, `⚠️ الفيديو بحجم (${fileSizeMB.toFixed(1)}MB) وهو كبير جداً (HD).\n🚀 لتجنب انهيار السيرفر، جاري إرساله كـ "ملف مستند" (Document) عالي الجودة...`);
+            await uploadVideoToWhatsApp(sender_psid, originalPath, thumbPath, videoItem, qualityObj.label, true);
         }
 
-        await generateThumbnail(readyPath, thumbPath);
-        await uploadVideoToWhatsApp(sender_psid, readyPath, thumbPath, videoItem, qualityObj.label);
     } catch (error) {
         console.error("❌ خطأ التحميل:", getRealError(error));
-        await sendTextMessage(sender_psid, `❌ خطأ أثناء معالجة أو إرسال الفيديو:\n${getRealError(error)}`);
+        await sendTextMessage(sender_psid, `❌ حدث خطأ أثناء تحميل الفيديو. قد يكون الموقع حظر هذا الفيديو مؤقتاً.`);
     } finally {
+        // تنظيف الملفات للحفاظ على مساحة السيرفر
         if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
-        if (fs.existsSync(readyPath)) fs.unlinkSync(readyPath);
         if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
         let rawTsPath = path.join('/tmp', `raw_${timestamp}.ts`);
         if (fs.existsSync(rawTsPath)) fs.unlinkSync(rawTsPath);
 
         let currentSession = userSessions.get(sender_psid);
-        if (currentSession && currentSession.items) userSessions.set(sender_psid, { type: 'search', items: currentSession.items, searchPage: currentSession.searchPage, searchQuery: currentSession.searchQuery });
-        else userSessions.delete(sender_psid);
+        if (currentSession && currentSession.items) {
+            userSessions.set(sender_psid, { type: 'search', items: currentSession.items, searchPage: currentSession.searchPage, searchQuery: currentSession.searchQuery });
+        } else {
+            userSessions.delete(sender_psid);
+        }
     }
 }
 
-async function downloadHLSInNode(subM3u8Url, rawTsPath, outputMp4Path) {
-    const baseUrl = subM3u8Url.substring(0, subM3u8Url.lastIndexOf('/') + 1);
-    const playlistRes = await axios.get(subM3u8Url, { headers: BROWSER_HEADERS, httpsAgent, timeout: 20000 });
-    const lines = String(playlistRes.data).split('\n');
-    const segmentUrls = [];
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (line && !line.startsWith('#')) segmentUrls.push(line.startsWith('http') ? line : baseUrl + line);
-    }
-    const writer = fs.createWriteStream(rawTsPath);
-    for (let i = 0; i < segmentUrls.length; i++) {
-        const segRes = await axios.get(segmentUrls[i], { headers: BROWSER_HEADERS, httpsAgent, responseType: 'arraybuffer', timeout: 30000 });
-        writer.write(Buffer.from(segRes.data));
-    }
-    await new Promise((resolve, reject) => { writer.end(); writer.on('finish', resolve); writer.on('error', reject); });
-    await new Promise((resolve, reject) => {
-        ffmpeg(rawTsPath).outputOptions(['-y', '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', '+faststart']).save(outputMp4Path).on('end', () => resolve(outputMp4Path)).on('error', reject);
-    });
-}
-
-function remuxFastStart(inputPath, outputPath) {
-    return new Promise((resolve) => {
-        ffmpeg(inputPath).outputOptions(['-y', '-c', 'copy', '-movflags', '+faststart']).save(outputPath)
-        .on('end', () => resolve(outputPath)).on('error', () => { fs.copyFileSync(inputPath, outputPath); resolve(outputPath); });
-    });
-}
-
-function generateThumbnail(videoPath, thumbPath) {
-    return new Promise((resolve) => {
-        ffmpeg(videoPath).inputOptions(['-ss', '00:00:02']).outputOptions(['-y', '-vframes', '1', '-vf', 'scale=320:-1', '-q:v', '5']).save(thumbPath).on('end', () => resolve(true)).on('error', () => resolve(false));
-    });
-}
-
-function compressVideoLocally(inputPath, outputPath, targetSizeMB) {
-    return new Promise((resolve, reject) => {
-        ffmpeg.ffprobe(inputPath, (err, metadata) => {
-            let targetVideoBitrate = '400k'; 
-            let hasDur = metadata && metadata.format && metadata.format.duration;
-            if (!err && hasDur) {
-                let vBitrate = Math.floor((targetSizeMB * 8192) / metadata.format.duration) - 128;
-                targetVideoBitrate = (vBitrate < 120 ? 120 : vBitrate) + 'k';
-            }
-            ffmpeg(inputPath).outputOptions(['-y', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-b:v', targetVideoBitrate, '-preset', 'ultrafast', '-threads', '2', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart'])
-            .save(outputPath).on('end', () => resolve(outputPath)).on('error', reject);
-        });
-    });
-}
-
-async function downloadFileLocally(url, destPath) {
-    const writer = fs.createWriteStream(destPath);
-    const response = await axios({ url, method: 'GET', headers: BROWSER_HEADERS, responseType: 'stream', timeout: 300000, httpsAgent });
-    response.data.pipe(writer);
-    return new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
-}
-
-async function uploadVideoToWhatsApp(sender_psid, filePath, thumbPath, videoItem, qualityLabel) {
+// 🌟 تحديث دالة الرفع لدعم وضع المستندات (Documents)
+async function uploadVideoToWhatsApp(sender_psid, filePath, thumbPath, videoItem, qualityLabel, sendAsDocument) {
     let thumbBuffer = undefined;
     if (thumbPath && fs.existsSync(thumbPath)) thumbBuffer = fs.readFileSync(thumbPath);
 
-    let durationSeconds = undefined;
-    try {
-        durationSeconds = await new Promise((resolve) => {
-            ffmpeg.ffprobe(filePath, (err, metadata) => {
-                if (!err && metadata?.format?.duration) resolve(Math.round(metadata.format.duration));
-                else resolve(undefined);
-            });
+    const captionText = `✅ *تم التحميل بنجاح*\n🎞️ الجودة: ${qualityLabel}\n⏱️ المدة: ${videoItem ? videoItem.duration : ''}`;
+
+    if (sendAsDocument) {
+        // إرسال الفيديوهات الكبيرة كملفات (تدعم حتى 2GB)
+        await sock.sendMessage(sender_psid, {
+            document: { url: filePath },
+            mimetype: 'video/mp4',
+            fileName: `${qualityLabel}_Video.mp4`,
+            caption: captionText,
+            jpegThumbnail: thumbBuffer
         });
-    } catch (e) {}
-
-    const messagePayload = {
-        video: { url: filePath },
-        mimetype: 'video/mp4',
-        caption: `✅ *اكتمل التحميل*\n🎞️ الجودة: ${qualityLabel}\n⏱️ المدة: ${videoItem ? videoItem.duration : ''}`
-    };
-
-    if (thumbBuffer) messagePayload.jpegThumbnail = thumbBuffer;
-    if (durationSeconds) messagePayload.seconds = durationSeconds;
-    await sock.sendMessage(sender_psid, messagePayload);
+    } else {
+        // إرسال الفيديوهات الصغيرة كفيديو عادي
+        const messagePayload = {
+            video: { url: filePath },
+            mimetype: 'video/mp4',
+            caption: captionText
+        };
+        if (thumbBuffer) messagePayload.jpegThumbnail = thumbBuffer;
+        await sock.sendMessage(sender_psid, messagePayload);
+    }
 }
 
 async function sendTextMessage(sender_psid, text) { await sock.sendMessage(sender_psid, { text: text }); }
